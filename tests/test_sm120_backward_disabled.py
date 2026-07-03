@@ -206,7 +206,6 @@ def test_cp_preprocess_bwd_raises_not_implemented():
             scale=scale,
             raw_cu_seqlens=None,
             state_v_first=False,
-            force_cp=1,
         )
     _assert_not_implemented_error(exc_info, "intra_card_cp_preprocess_bwd")
 
