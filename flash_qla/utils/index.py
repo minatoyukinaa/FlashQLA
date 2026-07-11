@@ -2,7 +2,6 @@
 
 import functools
 from typing import Any
-from collections import OrderedDict
 from collections.abc import Callable
 
 import torch
@@ -13,10 +12,10 @@ def tensor_cache(
     fn: Callable[..., torch.Tensor],
 ) -> Callable[..., torch.Tensor]:
     """
-    A decorator that caches the most recent results of a function with tensor inputs.
+    A decorator that caches the most recent result of a function with tensor inputs.
 
     This decorator will store the output of the decorated function for the most recent set of input tensors.
-    The cache is limited to a fixed size (default is 256). When the cache is full, the oldest entry will be removed.
+    If the function is called again with the same input tensors, it will return the cached result.
 
     Args:
         fn (Callable[..., torch.Tensor]):
@@ -26,37 +25,25 @@ def tensor_cache(
         Callable[..., torch.Tensor]:
             A wrapped version of the input function with single-entry caching.
     """
+    cache = []
+    cache_size = 4
 
-    cache: "OrderedDict[tuple[tuple[int, ...], tuple[tuple[str, int], ...]], tuple[tuple[Any, ...], dict[str, Any], Any]]" = OrderedDict()
-    cache_size = 256
-
-    def get_id(x: Any):
-        if (type(x) is int) or (type(x) is float) or (type(x) is str):
-            return x
-        else:
-            return id(x)
-
-    def make_identity_key(
-        args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> tuple[tuple[int, ...], tuple[tuple[str, int], ...]]:
-        args_key = tuple(get_id(a) for a in args)
-        kwargs_key = tuple(sorted((k, get_id(v)) for k, v in kwargs.items()))
-        return args_key, kwargs_key
+    def _equal(a: Any, b: Any) -> bool:
+        if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+            return a is b
+        return a == b
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         nonlocal cache, cache_size
-        key = make_identity_key(args, kwargs)
-        if key in cache:
-            cache.move_to_end(key, last=True)
-            _, _, cached_result = cache[key]
-            return cached_result
-
+        for (cached_args, cached_kwargs, cached_result) in cache:
+            if all(_equal(a, b) for a, b in zip(args, cached_args, strict=False)) and \
+                    all(k in cached_kwargs and _equal(v, cached_kwargs[k]) for k, v in kwargs.items()):
+                return cached_result
         result = fn(*args, **kwargs)
-        cache[key] = (args, kwargs, result)
-        cache.move_to_end(key, last=True)
+        cache.insert(0, (args, kwargs, result))
         if len(cache) > cache_size:
-            cache.popitem(last=False)
+            cache = cache[:cache_size]
         return result
 
     return wrapper
