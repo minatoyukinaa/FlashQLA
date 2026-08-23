@@ -1,4 +1,5 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
+# dbg-bump-1
 # Licensed under The MIT License [see LICENSE for details]
 
 import torch
@@ -12,8 +13,7 @@ from flash_qla.utils import prepare_chunk_offsets
     # out_idx=[-5, -4, -3, -2, -1],
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
-        tilelang.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
+        tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
     },
 )
 def tilelang_fused_chunk_gdr_bwd(
@@ -70,6 +70,12 @@ def tilelang_fused_chunk_gdr_bwd(
         if state_v_first
         else (batch_size, H, DK, DV)
     )
+    # dh_tmp 双缓冲: 槽 (i_s+1)%2 承载上一轮 dS0 供 K 读, 槽 i_s%2 供 S 本轮写
+    dh_tmp_shape = (
+        (batch_size, H, 2, DV, DK)
+        if state_v_first
+        else (batch_size, H, 2, DK, DV)
+    )
     ht_shape = (
         (batch_size, H, DV, DK)
         if state_v_first
@@ -87,6 +93,7 @@ def tilelang_fused_chunk_gdr_bwd(
         g: T.Tensor(g_shape, dtype=g_dtype),
         b: T.Tensor(b_shape, dtype=b_dtype),
         h: T.Tensor(h_shape, dtype=h_dtype),
+        dh_tmp: T.Tensor(dh_tmp_shape, dtype=qkva_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         chunk_offsets: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         dq: T.Tensor(v_shape, dtype=qkva_dtype),
@@ -117,10 +124,11 @@ def tilelang_fused_chunk_gdr_bwd(
             # q -> tmp_shared_2_1
             # q_shared = T.alloc_shared((block_S, DK), dtype=qkva_dtype)
             k_shared = T.alloc_shared((block_S, DK), dtype=qkva_dtype)
+            # v_shared 已移除: A 分支直接读全局 v, 省 8192B smem (merge 关闭后预算紧张)
             a_shared = T.alloc_shared((block_S, block_S), dtype=qkva_dtype)
-            # h_shared holds one DK-half of S0 at a time (W1-W4 windows)
+            # half the dk dim
             h_shared = T.alloc_shared(
-                (DV, DK // 2) if state_v_first else (DK // 2, DV),
+                (DV, DK//2) if state_v_first else (DK//2, DV),
                 dtype=h_dtype,
             )
             g_shared = T.alloc_shared((block_S), dtype=accum_dtype, scope="shared")
@@ -142,26 +150,20 @@ def tilelang_fused_chunk_gdr_bwd(
             tmp_shared_2_1 = T.alloc_shared((block_S, DK), dtype=qkva_dtype)
             tmp_shared_2_2 = T.alloc_shared((block_S, DK), dtype=qkva_dtype)
             tmp_shared_2_3 = T.alloc_shared((block_S, DK), dtype=qkva_dtype)
-            # tmp_shared_4_1 holds one DK-half of dSt; only the merged S+K consumer touches it
+            # half 4_1（DK 分块: 驻留 dS0 的左/右半）
             tmp_shared_4_1 = T.alloc_shared(
-                (DV, DK // 2) if state_v_first else (DK // 2, DV),
+                (DV, DK//2) if state_v_first else (DK//2, DV),
                 dtype=qkva_dtype,
             )
 
             # CONSUMER_K
-            # dk is split into two DK-halves: half-width N-split gemms on a single
-            # buffer infer inconsistent extended layouts; two separate fragments
-            # avoid the conflict (mirrors the dh_fragment_0/1 split).
-            dk_fragment_0 = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
-            dk_fragment_1 = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
-            dv_fragment = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
+            # dK 按 DK 半块（tmp_shared_4_1 与 h_shared 均为 DK 分块, 输出一致）
+            dk_frag_l = T.alloc_fragment((block_S, DK//2), dtype=accum_dtype)
+            dk_frag_r = T.alloc_fragment((block_S, DK//2), dtype=accum_dtype)
+            dv_fragment = T.alloc_fragment((block_S, DV), dtype=accum_dtype)
+            odot_fragment_1 = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
             dg_fragment_1 = T.alloc_fragment((block_S), dtype=accum_dtype)
-            dg_half_1 = T.alloc_fragment((block_S), dtype=accum_dtype)
-            dg_tmp_1_full = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
-            dg_tmp_1_0 = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
-            dg_tmp_1_1 = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
             dg_last_local_1 = T.alloc_fragment((1), dtype=accum_dtype)
-            dg_half_last_1 = T.alloc_fragment((1), dtype=accum_dtype)
 
             # CONSUMER_A
             mask_fragment = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
@@ -173,24 +175,18 @@ def tilelang_fused_chunk_gdr_bwd(
             lo_fragment = T.alloc_fragment((block_S, block_S), dtype="uint16")
             uint32_fragment = T.alloc_fragment((block_S, block_S), dtype="uint32")
             u_fragment = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
-            # dq split into DK-halves for the same reason as dk (see above)
-            dq_fragment_0 = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
-            dq_fragment_1 = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
+            # dQ 按 h_shared 的 DK 半块（右半/左半驻留）
+            dq_frag_r = T.alloc_fragment((block_S, DK//2), dtype=accum_dtype)
+            dq_frag_l = T.alloc_fragment((block_S, DK//2), dtype=accum_dtype)
             db_fragment = T.alloc_fragment((block_S), dtype=accum_dtype)
-            odot_fragment_2_0 = T.alloc_fragment(
-                (block_S, DK // 2), dtype=qkva_dtype
-            )
-            odot_fragment_2_1 = T.alloc_fragment(
-                (block_S, DK // 2), dtype=qkva_dtype
-            )
+            odot_fragment_2 = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
             dg_fragment_2 = T.alloc_fragment((block_S), dtype=accum_dtype)
-            dg_half_2 = T.alloc_fragment((block_S), dtype=accum_dtype)
-            dg_a_2 = T.alloc_fragment((block_S), dtype=accum_dtype)
+            dg_fragment_2b = T.alloc_fragment((block_S), dtype=accum_dtype)
+
 
             # CONSUMER_S
-            # dh is split into two DK-halves so that no row/column offset access is
-            # ever needed on a single fragment (mma C layout spreads the 128-wide DK
-            # dim across warps, which breaks offset slicing injectivity).
+            # dh 按 DK 半块物理拆分为两个独立 fragment：避免对单一 fragment 做
+            # 偏移视图访问（mma C 布局在 sm120 上投影不可归一化）。
             dh_fragment_0 = T.alloc_fragment(
                 (DV, DK // 2) if state_v_first else (DK // 2, DV),
                 dtype=accum_dtype,
@@ -203,44 +199,46 @@ def tilelang_fused_chunk_gdr_bwd(
             #     (DV, DK) if state_v_first else (DK, DV),
             #     dtype=accum_dtype,
             # )
-            reduce_fragment = T.alloc_fragment(
-                (DV, DK // 2) if state_v_first else (DK // 2, DV),
-                dtype=accum_dtype,
-            )
+            # todo make reduce_fragment(128,2)
+            reduce_fragment = T.alloc_fragment((128,2),dtype=accum_dtype)
             dg_last_local_3 = T.alloc_fragment((1), dtype=accum_dtype)
-            dg_row_tmp = T.alloc_fragment((256,), dtype=accum_dtype)
             g_last_local_3 = T.alloc_local((1), dtype=accum_dtype)
 
-            # 16 stages + 8 h-window stages
-            # arrive counts assume: merged S+K consumer = 256 threads (tx<256),
-            # A consumer = 128 threads, each producer warp = 32 threads
+            # 16 stages
             bar_00 = T.alloc_barrier(arrive_count=448)
             bar_01 = T.alloc_barrier(arrive_count=384)
-            bar_02 = T.alloc_barrier(arrive_count=416)
-            bar_03 = T.alloc_barrier(arrive_count=384)
+            bar_02 = T.alloc_barrier(arrive_count=288)
+            bar_03 = T.alloc_barrier(arrive_count=256)
             bar_04 = T.alloc_barrier(arrive_count=416)
-            bar_05 = T.alloc_barrier(arrive_count=416)
-            bar_06 = T.alloc_barrier(arrive_count=384)
-            bar_07 = T.alloc_barrier(arrive_count=384)
-            bar_08 = T.alloc_barrier(arrive_count=384)
-            bar_09 = T.alloc_barrier(arrive_count=384)
-            bar_10 = T.alloc_barrier(arrive_count=416)
-            bar_11 = T.alloc_barrier(arrive_count=384)
-            bar_12 = T.alloc_barrier(arrive_count=256)
-            bar_13 = T.alloc_barrier(arrive_count=384)
-            bar_14 = T.alloc_barrier(arrive_count=384)
-            bar_15 = T.alloc_barrier(arrive_count=384)
-            # h windows: bar_h{0,2,4,6} = "S0 DK-half ready" (h-producer 32 + TMA tx),
-            # bar_h{1,3,5,7} = "window consumed" (A + merged S+K)
-            bar_h0 = T.alloc_barrier(arrive_count=32)
-            bar_h1 = T.alloc_barrier(arrive_count=384)
-            bar_h2 = T.alloc_barrier(arrive_count=32)
-            bar_h3 = T.alloc_barrier(arrive_count=384)
-            bar_h4 = T.alloc_barrier(arrive_count=32)
-            bar_h5 = T.alloc_barrier(arrive_count=384)
-            bar_h6 = T.alloc_barrier(arrive_count=32)
-            bar_h7 = T.alloc_barrier(arrive_count=384)
+            bar_05 = T.alloc_barrier(arrive_count=288)
+            bar_06 = T.alloc_barrier(arrive_count=256)
+            bar_07 = T.alloc_barrier(arrive_count=256)
+            # when barrier 8_1 arrivee,all consumer complete the left part
+            bar_08_1 = T.alloc_barrier(arrive_count=256)
+            bar_08_2 = T.alloc_barrier(arrive_count=384) #all right windows has been cosnumed
+            bar_08_3 = T.alloc_barrier(arrive_count=128)
+            # tmp_shared_4_1 (dS0) DK 半块搬运同步（K 自搬自用）
+            # bar_k_right_ready = T.alloc_barrier(arrive_count=128)  # K-01 后 K 装好右半, 可算 dV' 右半
+            bar_k_left_ready = T.alloc_barrier(arrive_count=128)   # K-07 后 K 装好左半, 可算 dK 左半输出
+            # K-07 内部: dk_frag -> dqkv_shared 中转 dg dot 的写后读同步
+            # bar_s4_merge = T.alloc_barrier(arrive_count=128)
+            # dh_tmp 双缓冲写-读同步: S-15 写完槽 i_s%2 后到达;
+            # K-01 在迭代 i_s 读槽 (i_s+1)%2 (= 上一轮写入槽) 前等待。
+            # 到达序: 初始(槽0) -> S-15(0)写槽0 -> S-15(1)写槽1 -> ...
+            # 等待序: K-01(0)读槽0 -> K-01(1)读槽1 -> K-01(2)读槽0 -> ...
+            bar_dhtmp_ready = T.alloc_barrier(arrive_count=128)
+            # A-10 内部: dg dot 经 dqkv_shared 中转的写后读同步
+            bar_s4_dot_a = T.alloc_barrier(arrive_count=128)
+            # 
 
+            # add bar 09 128, for consumer S
+            bar_09 = T.alloc_barrier(arrive_count=256)
+            bar_10 = T.alloc_barrier(arrive_count=288)
+            bar_11 = T.alloc_barrier(arrive_count=256)
+            bar_12 = T.alloc_barrier(arrive_count=128)
+            bar_13 = T.alloc_barrier(arrive_count=256)
+            bar_14 = T.alloc_barrier(arrive_count=256)
+            bar_15 = T.alloc_barrier(arrive_count=256)
             T.annotate_layout(
                 {
                     do_shared: tilelang.layout.make_swizzled_layout(do_shared),
@@ -277,9 +275,21 @@ def tilelang_fused_chunk_gdr_bwd(
             tx = T.get_thread_binding()
 
             PRODUCER_NREG = 24
-            CONSUMER_SK_NREG = 224
+            CONSUMER_K_NREG = 144
             CONSUMER_A_NREG = 184
+            CONSUMER_S_NREG = 160
 
+            # Prefetch the last chunk of data
+            if state_v_first:
+                T.copy(
+                    h[batch_idx, chunk_start_idx + num_iters - 1, bh, 0:DV, 0:DK//2],
+                    h_shared,
+                )
+            else:
+                T.copy(
+                    h[batch_idx, chunk_start_idx + num_iters - 1, bh, 0:DK//2, 0:DV],
+                    h_shared,
+                )
             for j_s, j_k in T.Parallel(block_S, DK):
                 if seq_start_idx + (num_iters - 1) * block_S + j_s < seq_end_idx:
                     # q_shared
@@ -335,91 +345,269 @@ def tilelang_fused_chunk_gdr_bwd(
                     ]
                 else:
                     b_shared[j_s] = 0
-
-            # Merged S+K consumer (tx < 256): K-phase → S-phase interleaved.
-            # dh_fragment stays register-resident across iterations; tmp_shared_4_1
-            # (one DK-half of dSt) is staged from it right before each half-gemm.
-            if tx < 256:
-                T.set_max_nreg(CONSUMER_SK_NREG, 1)
+            if tx < 128:
+                T.set_max_nreg(CONSUMER_S_NREG, 1)
 
                 if use_dht:
-                    # T.copy seeding (hopper style): offset-column T.Parallel
-                    # loads poison the inferred fragment layout on
-                    # tilelang>=0.1.13 and break downstream reduce/copy
-                    # projectability checks.
                     if state_v_first:
-                        T.copy(dht[bb, bh, 0:DV, 0 : DK // 2], dh_fragment_0)
-                        T.copy(dht[bb, bh, 0:DV, DK // 2 : DK], dh_fragment_1)
+                        T.copy(dht[bb, bh, 0:DV, 0:DK//2], dh_fragment_0)
+                        T.copy(dht[bb, bh, 0:DV, DK//2:DK], dh_fragment_1)
                     else:
-                        T.copy(dht[bb, bh, 0 : DK // 2, 0:DV], dh_fragment_0)
-                        T.copy(dht[bb, bh, DK // 2 : DK, 0:DV], dh_fragment_1)
+                        T.copy(dht[bb, bh, 0:DK//2, 0:DV], dh_fragment_0)
+                        T.copy(dht[bb, bh, DK//2:DK, 0:DV], dh_fragment_1)
                 else:
                     T.clear(dh_fragment_0)
                     T.clear(dh_fragment_1)
-
+                # 初始 dS0 (=dht 或 0) 写入两个槽: 槽0 供 K-01(0)/K-07(1) 读, 槽1 供 K-07(0) 读
+                for slot in T.serial(2):
+                    if state_v_first:
+                        for j_v, j_k in T.Parallel(DV, DK // 2):
+                            dh_tmp[bb, bh, slot, j_v, j_k] = T.Cast(qkva_dtype, dh_fragment_0[j_v, j_k])
+                            dh_tmp[bb, bh, slot, j_v, DK // 2 + j_k] = T.Cast(qkva_dtype, dh_fragment_1[j_v, j_k])
+                    else:
+                        for j_k, j_v in T.Parallel(DK // 2, DV):
+                            dh_tmp[bb, bh, slot, j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_0[j_k, j_v])
+                            dh_tmp[bb, bh, slot, DK // 2 + j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_1[j_k, j_v])
+                # 预取左半到 tmp_shared_4_1（从 dh_tmp 槽0 重载）
+                if state_v_first:
+                    T.copy(dh_tmp[bb, bh, 0, 0:DV, 0:DK//2], tmp_shared_4_1)
+                else:
+                    T.copy(dh_tmp[bb, bh, 0, 0:DK//2, 0:DV], tmp_shared_4_1)
+                # 初始 dh_tmp (dht/0) 已就绪, 放行 K-01 首轮重载
+                T.barrier_arrive(bar_dhtmp_ready)
                 for i_s in T.serial(num_iters):
+                    cur_idx = chunk_start_idx + num_iters - i_s - 1
                     T.barrier_arrive(bar_00)
-
-                    # 00 — g_exp / g_rev_exp; S2[S] dK
+                    # 00
                     T.barrier_wait(bar_00, (i_s + 0) % 2)
                     for j_s in T.Parallel(block_S):
                         g_exp_shared[j_s] = T.exp2(g_shared[j_s] * 1.442695)
                         g_rev_exp_shared[j_s] = T.exp2(
                             (g_shared[block_S - 1] - g_shared[j_s]) * 1.442695
                         )
-                    if i_s > 0:
-                        for j_s, j_k in T.Parallel(block_S, DK // 2):
-                            dqkv_shared[j_s, j_k] = T.Cast(
-                                qkva_dtype, dk_fragment_0[j_s, j_k]
-                            )
-                        for j_s, j_k in T.Parallel(block_S, DK // 2):
-                            dqkv_shared[j_s, DK // 2 + j_k] = T.Cast(
-                                qkva_dtype, dk_fragment_1[j_s, j_k]
-                            )
                     T.barrier_arrive(bar_01)
 
-                    # 01 — dV' = K @ dSt  (two half gemms; dSt staged from dh_fragment)
+                    # 01, 02, 03
                     T.barrier_wait(bar_01, (i_s + 0) % 2)
+                    g_last_local_3[0] = g_exp_shared[block_S - 1]
+                    # dS0 = g_last * dSt（两个半块 fragment 分别缩放, 自然索引）
                     if state_v_first:
                         for j_v, j_k in T.Parallel(DV, DK // 2):
-                            tmp_shared_4_1[j_v, j_k] = T.Cast(
-                                qkva_dtype, dh_fragment_0[j_v, j_k]
-                            )
+                            dh_fragment_0[j_v, j_k] *= g_last_local_3[0]
+                            dh_fragment_1[j_v, j_k] *= g_last_local_3[0]
+                    else:
+                        for j_k, j_v in T.Parallel(DK // 2, DV):
+                            dh_fragment_0[j_k, j_v] *= g_last_local_3[0]
+                            dh_fragment_1[j_k, j_v] *= g_last_local_3[0]
+                    T.barrier_arrive(bar_04)
+
+                    # 04, 05, 06, 07
+                    T.barrier_wait(bar_04, (i_s + 0) % 2)
+                    # dg_last += sum(dS0 * S0)
+                    T.clear(reduce_fragment)
+                    # W2: dh_fragment_1(right) x h_shared(right), right part
+                    if state_v_first:
+                        for j_v, j_k in T.Parallel(DV, DK//2):
+                            reduce_fragment[j_k//32 *64 + 
+                            j_v//64*32+ 
+                            j_v%8*4 + 
+                            j_k%8//2
+                            ,j_k%2] += dh_fragment_1[j_v,j_k] * h_shared[j_v, j_k]
+                    else:
+                        for j_k, j_v in T.Parallel(DK//2, DV):
+                            reduce_fragment[j_v//64 *64 + 
+                            j_k//32*32+ 
+                            j_k%8*4 + 
+                            j_v%8//2
+                            ,j_v%2] += dh_fragment_1[j_k,j_v] * h_shared[j_k, j_v]
+                    T.barrier_arrive(bar_08_2)
+                    T.barrier_wait(bar_08_2, (i_s + 0) % 2)
+                    # copy left part from hbm
+                    if state_v_first:
+                        T.copy(h[batch_idx,cur_idx,bh,0:DV,:DK//2],h_shared)
+                    else:
+                        T.copy(h[batch_idx,cur_idx,bh,:DK//2,0:DV],h_shared)
+                    T.barrier_arrive(bar_08_3)
+                    T.barrier_wait(bar_08_3,(i_s+0)%2)
+                    # W1: dh_fragment_0(left part)
+                    if state_v_first:
+                        for j_v, j_k in T.Parallel(DV, DK//2):
+                            reduce_fragment[j_k//32 *64 + 
+                            j_v//64*32+ 
+                            j_v%8*4 + 
+                            j_k%8//2
+                            ,j_k%2] += dh_fragment_0[j_v,j_k] * h_shared[j_v, j_k]
+                    else:
+                        for j_k, j_v in T.Parallel(DK//2, DV):
+                            reduce_fragment[j_v//64 *64 + 
+                            j_k//32*32+ 
+                            j_k%8*4 + 
+                            j_v%8//2
+                            ,j_v%2] += dh_fragment_0[j_k,j_v] * h_shared[j_k, j_v]
+
+                    T.barrier_arrive(bar_09)
+                    T.barrier_wait(bar_09, (i_s + 0) % 2)
+                    # 10
+                    T.barrier_wait(bar_10, (i_s + 0) % 2)
+                    T.reduce_sum(T.reshape(reduce_fragment, (128 * 2,)), dg_last_local_3, dim=0, clear=True)
+                    dg_shared[block_S - 1] += dg_last_local_3[0]
+                    T.barrier_arrive(bar_11)
+
+                    # 11
+                    T.barrier_wait(bar_11, (i_s + 0) % 2)
+                    # dS0 += K^T @ dVg（M-split: 输出 DK 维拆到两个半块 fragment）
+                    if state_v_first:
                         T.gemm(
-                            k_shared[:, : DK // 2],
+                            tmp_shared_2_3,
+                            tmp_shared_2_2[:, 0:DK//2],
+                            dh_fragment_0,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                        T.gemm(
+                            tmp_shared_2_3,
+                            tmp_shared_2_2[:, DK//2:DK],
+                            dh_fragment_1,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                    else:
+                        T.gemm(
+                            tmp_shared_2_2[:, 0:DK//2],
+                            tmp_shared_2_3,
+                            dh_fragment_0,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                        T.gemm(
+                            tmp_shared_2_2[:, DK//2:DK],
+                            tmp_shared_2_3,
+                            dh_fragment_1,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                    T.barrier_arrive(bar_12)
+                    T.barrier_wait(bar_12, (i_s + 0) % 2)
+
+                    # 13
+                    T.barrier_wait(bar_13, (i_s + 0) % 2)
+                    # dOg = s * g * dO
+                    for j_s, j_v in T.Parallel(block_S, DV):
+                        tmp_shared_2_3[j_s, j_v] = (
+                            scale * do_shared[j_s, j_v] * g_exp_shared[j_s]
+                        )
+                    T.barrier_arrive(bar_14)
+
+                    # 14
+                    T.barrier_wait(bar_14, (i_s + 0) % 2)
+                    # dS0 += Q^T @ dOg（M-split）
+                    if state_v_first:
+                        T.gemm(
+                            tmp_shared_2_3,
+                            tmp_shared_2_1[:, 0:DK//2],
+                            dh_fragment_0,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                        T.gemm(
+                            tmp_shared_2_3,
+                            tmp_shared_2_1[:, DK//2:DK],
+                            dh_fragment_1,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                    else:
+                        T.gemm(
+                            tmp_shared_2_1[:, 0:DK//2],
+                            tmp_shared_2_3,
+                            dh_fragment_0,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                        T.gemm(
+                            tmp_shared_2_1[:, DK//2:DK],
+                            tmp_shared_2_3,
+                            dh_fragment_1,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                    T.barrier_arrive(bar_15)
+
+                    # 15
+                    T.barrier_wait(bar_15, (i_s + 0) % 2)
+                    # dS0 写回 HBM 槽 i_s%2（双缓冲: K-07 本轮读的是对面槽, 无写读冲突）
+                    if state_v_first:
+                        for j_v, j_k in T.Parallel(DV, DK // 2):
+                            dh_tmp[bb, bh, i_s % 2, j_v, j_k] = T.Cast(qkva_dtype, dh_fragment_0[j_v, j_k])
+                            dh_tmp[bb, bh, i_s % 2, j_v, DK // 2 + j_k] = T.Cast(qkva_dtype, dh_fragment_1[j_v, j_k])
+                    else:
+                        for j_k, j_v in T.Parallel(DK // 2, DV):
+                            dh_tmp[bb, bh, i_s % 2, j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_0[j_k, j_v])
+                            dh_tmp[bb, bh, i_s % 2, DK // 2 + j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_1[j_k, j_v])
+                    # 预取左半到 tmp_shared_4_1（从本轮写入槽重载）
+                    if state_v_first:
+                        T.copy(dh_fragment_0, tmp_shared_4_1)
+                    else:
+                        T.copy(dh_fragment_0, tmp_shared_4_1)
+                    # 槽 i_s%2 写回完成: 到达序与 K-01 的读槽序 ((i_s+1)%2) 交错匹配
+                    T.evaluate(T.call_extern("handle", "__threadfence_block"))
+                    T.barrier_arrive(bar_dhtmp_ready)
+
+                if use_dht:
+                    if state_v_first:
+                        for j_v, j_k in T.Parallel(DV, DK // 2):
+                            dh0[bb, bh, j_v, j_k] = dh_fragment_0[j_v, j_k]
+                            dh0[bb, bh, j_v, DK // 2 + j_k] = dh_fragment_1[j_v, j_k]
+                    else:
+                        for j_k, j_v in T.Parallel(DK // 2, DV):
+                            dh0[bb, bh, j_k, j_v] = dh_fragment_0[j_k, j_v]
+                            dh0[bb, bh, DK // 2 + j_k, j_v] = dh_fragment_1[j_k, j_v]
+
+            elif tx < 256:
+                T.set_max_nreg(CONSUMER_K_NREG, 1)
+
+                for i_s in T.serial(num_iters):
+                    T.barrier_arrive(bar_00)
+
+                    # 16 == 00
+                    T.barrier_wait(bar_00, (i_s + 0) % 2)
+                    # S2[S] dK
+                    if i_s > 0:
+                        T.copy(dk_frag_l, dqkv_shared[:, :DK//2])
+                        T.copy(dk_frag_r, dqkv_shared[:, DK//2:])
+                    T.barrier_arrive(bar_01)
+
+                    # 01
+                    T.barrier_wait(bar_01, (i_s + 0) % 2)
+                    # K-01
+                    T.barrier_wait(bar_dhtmp_ready, (i_s + 0) % 2)
+                    # dV' = K @ dSt（左半归约, 驻留左半）
+                    if state_v_first:
+                        T.gemm(
+                            k_shared[:, :DK//2],
                             tmp_shared_4_1,
                             dv_fragment,
                             transpose_B=True,
                             clear_accum=True,
                         )
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            tmp_shared_4_1[j_v, j_k] = T.Cast(
-                                qkva_dtype, dh_fragment_1[j_v, j_k]
-                            )
+                        T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, 0:DV, DK//2:DK], tmp_shared_4_1)
                         T.gemm(
-                            k_shared[:, DK // 2 :],
+                            k_shared[:, DK//2:],
                             tmp_shared_4_1,
                             dv_fragment,
                             transpose_B=True,
                             clear_accum=False,
                         )
                     else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            tmp_shared_4_1[j_k, j_v] = T.Cast(
-                                qkva_dtype, dh_fragment_0[j_k, j_v]
-                            )
                         T.gemm(
-                            k_shared[:, : DK // 2],
+                            k_shared[:, :DK//2],
                             tmp_shared_4_1,
                             dv_fragment,
                             clear_accum=True,
                         )
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            tmp_shared_4_1[j_k, j_v] = T.Cast(
-                                qkva_dtype, dh_fragment_1[j_k, j_v]
-                            )
+                        T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, DK//2:DK, 0:DV], tmp_shared_4_1)
                         T.gemm(
-                            k_shared[:, DK // 2 :],
+                            k_shared[:, DK//2:],
                             tmp_shared_4_1,
                             dv_fragment,
                             clear_accum=False,
@@ -429,8 +617,9 @@ def tilelang_fused_chunk_gdr_bwd(
                         dv_fragment[j_s, j_v] *= g_rev_exp_shared[j_s]
                     T.barrier_arrive(bar_02)
 
-                    # 02 — dV' += Pg^T @ dO
+                    # 02
                     T.barrier_wait(bar_02, (i_s + 0) % 2)
+                    # dV' += Pg^T @ dO
                     T.gemm(
                         tmp_shared_1_1,
                         do_shared,
@@ -440,20 +629,15 @@ def tilelang_fused_chunk_gdr_bwd(
                     )
                     T.barrier_arrive(bar_03)
 
-                    # 03 — S2[1] dV'
+                    # 03 # diff from merge version
                     T.barrier_wait(bar_03, (i_s + 0) % 2)
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        tmp_shared_2_1[j_s, j_v] = T.Cast(
-                            qkva_dtype, dv_fragment[j_s, j_v]
-                        )
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        tmp_shared_2_1[j_s, DV // 2 + j_v] = T.Cast(
-                            qkva_dtype, dv_fragment[j_s, DV // 2 + j_v]
-                        )
+                    # S2[1] dV'
+                    T.copy(dv_fragment, tmp_shared_2_1)
                     T.barrier_arrive(bar_04)
 
-                    # 04 — dV = Ag^T @ dV'; S2[S] dV
+                    # 04
                     T.barrier_wait(bar_04, (i_s + 0) % 2)
+                    # dV = Ag^T @ dV'
                     T.gemm(
                         tmp_shared_1_2,
                         tmp_shared_2_1,
@@ -461,363 +645,191 @@ def tilelang_fused_chunk_gdr_bwd(
                         transpose_A=True,
                         clear_accum=True,
                     )
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        dqkv_shared[j_s, j_v] = T.Cast(
-                            qkva_dtype, dv_fragment[j_s, j_v]
-                        )
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        dqkv_shared[j_s, DV // 2 + j_v] = T.Cast(
-                            qkva_dtype, dv_fragment[j_s, DV // 2 + j_v]
-                        )
+                    # S2[S] dV
+                    T.copy(dv_fragment, dqkv_shared)
                     T.barrier_arrive(bar_05)
 
-                    # 05 — dVg = -g * dV; dg += sum(dVg * U); S2[3] dVg
+                    # 05
                     T.barrier_wait(bar_05, (i_s + 0) % 2)
                     # dVg = -g * dV
                     for j_s, j_v in T.Parallel(block_S, DV):
                         dv_fragment[j_s, j_v] = (
                             -dv_fragment[j_s, j_v] * g_exp_shared[j_s]
                         )
-                    # !!! do not use T.Parallel(block_S,DV), dg+= sum(dVg * U) 
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        dg_tmp_1_full[j_s, j_v] = (
-                            tmp_shared_2_3[j_s, j_v]
-                            * dv_fragment[j_s, j_v]
-                        )
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        dg_tmp_1_full[j_s, DV // 2 + j_v] = (
-                            tmp_shared_2_3[j_s, DV // 2 + j_v]
-                            * dv_fragment[j_s, DV // 2 + j_v]
-                        )
-                    T.reduce_sum(dg_tmp_1_full, dg_fragment_1, dim=1, clear=True)
-                    for j_s in T.Parallel(block_S):
-                        dg_shared[j_s] = dg_fragment_1[j_s]
-                    # T.copy(dg_fragment_1,dg_shared),  Store dV
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        tmp_shared_2_3[j_s, j_v] = dv_fragment[j_s, j_v]
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        tmp_shared_2_3[j_s, DV // 2 + j_v] = dv_fragment[j_s, DV // 2 + j_v]
+                    # dg += sum(dVg * U)
+                    T.copy(tmp_shared_2_3, odot_fragment_1)
+                    for j_s, j_v in T.Parallel(block_S, DV):
+                        odot_fragment_1[j_s, j_v] *= dv_fragment[j_s, j_v]
+                    T.reduce_sum(odot_fragment_1, dg_fragment_1, dim=1, clear=True)
+                    T.copy(dg_fragment_1, dg_shared)
+                    # dg_shared 的 scatter 写回只由部分线程执行（lower 后落在
+                    # thread_binding % 4 * 2 + thread_binding // 64 == const 的
+                    # 发散 if 内）。开启 AGGRESSIVE_SHARED_MEMORY_MERGE 后 ThreadSync
+                    # 会在该 if 内插屏障并因条件非 warp 连续而外提（#3042 警告），
+                    # 这里在分支一致的位置显式同步，使 planner 无需在发散 if 内插屏障。
+                    T.tvm_storage_sync("shared")
+                    # S2[3] dVg
+                    T.copy(dv_fragment, tmp_shared_2_3)
                     T.barrier_arrive(bar_06)
 
-                    # 06 — S2[2] K
+                    # 06
                     T.barrier_wait(bar_06, (i_s + 0) % 2)
-                    T.copy(k_shared, tmp_shared_2_2)
+                    # S2[2] K
+                    T.copy(k_shared, odot_fragment_1)
+                    T.copy(odot_fragment_1, tmp_shared_2_2)
                     T.barrier_arrive(bar_07)
 
-                    # 07 — dK = V' @ dSt^T  (two half gemms, split dk fragments)
+                    # 07
                     T.barrier_wait(bar_07, (i_s + 0) % 2)
+                    # dK = dV' @ dSt^T（右半归约, 驻留右半）
                     if state_v_first:
-                        T.copy(dh_fragment_0, tmp_shared_4_1)
                         T.gemm(
                             tmp_shared_2_1,
                             tmp_shared_4_1,
-                            dk_fragment_0,
-                            clear_accum=True,
-                        )
-                        T.copy(dh_fragment_1, tmp_shared_4_1)
-                        T.gemm(
-                            tmp_shared_2_1,
-                            tmp_shared_4_1,
-                            dk_fragment_1,
+                            dk_frag_r,
                             clear_accum=True,
                         )
                     else:
-                        T.copy(dh_fragment_0, tmp_shared_4_1)
                         T.gemm(
                             tmp_shared_2_1,
                             tmp_shared_4_1,
-                            dk_fragment_0,
+                            dk_frag_r,
                             transpose_B=True,
                             clear_accum=True,
                         )
-                        T.copy(dh_fragment_1, tmp_shared_4_1)
+                    # K 自搬左半到 tmp_shared_4_1: 读槽 (i_s+1)%2 (上一轮 dS0,
+                    # 双缓冲下 S 本轮只写槽 i_s%2, 天然无竞态)
+                    if state_v_first:
+                        T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, 0:DV, 0:DK//2], tmp_shared_4_1)
+                    else:
+                        T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, 0:DK//2, 0:DV], tmp_shared_4_1)
+                    T.barrier_arrive(bar_k_left_ready)
+                    T.barrier_wait(bar_k_left_ready, (i_s + 0) % 2)
+                    # dK = dV' @ dSt^T（左半归约, K 已自搬左半）
+                    if state_v_first:
                         T.gemm(
                             tmp_shared_2_1,
                             tmp_shared_4_1,
-                            dk_fragment_1,
+                            dk_frag_l,
+                            clear_accum=True,
+                        )
+                    else:
+                        T.gemm(
+                            tmp_shared_2_1,
+                            tmp_shared_4_1,
+                            dk_frag_l,
                             transpose_B=True,
                             clear_accum=True,
                         )
-                    T.barrier_arrive(bar_08)
+                    # dK = g_last/g * dK
+                    for j_s, j_k in T.Parallel(block_S, DK//2):
+                        dk_frag_r[j_s, j_k] *= g_rev_exp_shared[j_s]
+                    for j_s, j_k in T.Parallel(block_S, DK//2):
+                        dk_frag_l[j_s, j_k] *= g_rev_exp_shared[j_s]
+                    # dg -= sum(K * dK)（经 dqkv_shared 中转, 避免半宽/完整 layout 冲突）
+                    T.copy(dk_frag_l, dqkv_shared[:, :DK//2])
+                    T.copy(dk_frag_r, dqkv_shared[:, DK//2:])
+                    T.fence_proxy_async()
+                    # T.barrier_arrive(bar_s4_merge)
+                    # T.barrier_wait(bar_s4_merge, (i_s + 0) % 2)
+                    for j_s, j_k in T.Parallel(block_S, DK):
+                        odot_fragment_1[j_s, j_k] *= -dqkv_shared[j_s, j_k]
+                    T.reduce_sum(odot_fragment_1, dg_fragment_1, dim=1, clear=True)
 
-                    # 08 — dS0 = g_last * dS0; dg_last += sum(dS0 * S0)  [W1/W2]
-                    # original Consumer A bar 1 2 3
-                    T.barrier_wait(bar_08, (i_s + 0) % 2)
-                    g_last_local_3[0] = g_exp_shared[block_S - 1]
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            dh_fragment_0[j_v, j_k] *= g_last_local_3[0]
-                            dh_fragment_1[j_v, j_k] *= g_last_local_3[0]
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            dh_fragment_0[j_k, j_v] *= g_last_local_3[0]
-                            dh_fragment_1[j_k, j_v] *= g_last_local_3[0]
-                    T.clear(reduce_fragment)
-                    # W1: S0[:, :DK/2]
-                    T.barrier_wait(bar_h0, (i_s + 0) % 2)
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            reduce_fragment[j_v, j_k] += (
-                                dh_fragment_0[j_v, j_k] * h_shared[j_v, j_k]
-                            )
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            reduce_fragment[j_k, j_v] += (
-                                dh_fragment_0[j_k, j_v] * h_shared[j_k, j_v]
-                            )
-                    # Arrive bar_h1 BEFORE waiting for W2: the W2 load is only
-                    # issued after both consumers signal W1 consumption, and
-                    # this group's W2 read happens later (after bar_h2).
-                    T.barrier_arrive(bar_h1)
-                    # W2: S0[:, DK/2:]
-                    T.barrier_wait(bar_h2, (i_s + 0) % 2)
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            reduce_fragment[j_v, j_k] += (
-                                dh_fragment_1[j_v, j_k] * h_shared[j_v, j_k]
-                            )
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            reduce_fragment[j_k, j_v] += (
-                                dh_fragment_1[j_k, j_v] * h_shared[j_k, j_v]
-                            )
-                    T.barrier_arrive(bar_h3)
-                    # dg_last += sum(dh * S0): stage the accumulator through
-                    # shared memory and reduce manually. T.reduce_sum on the
-                    # fragment (or a T.reshape of it) trips tilelang>=0.1.13's
-                    # thread-owned-segment projectability check for the layouts
-                    # inferred here. tmp_shared_4_1 is dead at this point (its
-                    # last use was the dSt staging in step 07). Element-wise
-                    # stores are used instead of T.copy because the fragment->
-                    # shared copy lowering also hits the same ReduceOp check.
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            tmp_shared_4_1[j_v, j_k] = reduce_fragment[j_v, j_k]
-                        for j in T.Parallel(256):
-                            dg_row_tmp[j] = 0
-                            for jm in T.serial(32):
-                                dg_row_tmp[j] += tmp_shared_4_1[
-                                    (j * 32 + jm) // (DK // 2),
-                                    (j * 32 + jm) % (DK // 2),
-                                ]
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            tmp_shared_4_1[j_k, j_v] = reduce_fragment[j_k, j_v]
-                        for j in T.Parallel(256):
-                            dg_row_tmp[j] = 0
-                            for jm in T.serial(32):
-                                dg_row_tmp[j] += tmp_shared_4_1[
-                                    (j * 32 + jm) // DV,
-                                    (j * 32 + jm) % DV,
-                                ]
-                    T.reduce_sum(dg_row_tmp, dg_last_local_3, dim=0, clear=True)
-                    dg_shared[block_S - 1] += dg_last_local_3[0]
-                    T.barrier_arrive(bar_11)
-
-                    # 09 — dK = g_last/g * dK; dg -= sum(K * dK); dg_last
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dk_fragment_0[j_s, j_k] *= g_rev_exp_shared[j_s]
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dk_fragment_1[j_s, j_k] *= g_rev_exp_shared[j_s]
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dg_tmp_1_0[j_s, j_k] = (
-                            -T.Cast(accum_dtype, k_shared[j_s, j_k])
-                            * dk_fragment_0[j_s, j_k]
-                        )
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dg_tmp_1_1[j_s, j_k] = (
-                            -T.Cast(accum_dtype, k_shared[j_s, DK // 2 + j_k])
-                            * dk_fragment_1[j_s, j_k]
-                        )
-                    T.reduce_sum(dg_tmp_1_0, dg_fragment_1, dim=1, clear=True)
-                    T.reduce_sum(dg_tmp_1_1, dg_half_1, dim=1, clear=True)
                     for j_s in T.Parallel(block_S):
-                        dg_shared[j_s] += dg_fragment_1[j_s] + dg_half_1[j_s]
-                    T.reduce_sum(dg_fragment_1, dg_last_local_1, dim=0, clear=True)
-                    T.reduce_sum(dg_half_1, dg_half_last_1, dim=0, clear=True)
-                    dg_shared[block_S - 1] -= (
-                        dg_last_local_1[0] + dg_half_last_1[0]
-                    )
-                    T.barrier_arrive(bar_09)
-                    T.barrier_wait(bar_09, (i_s + 0) % 2)
+                        dg_shared[j_s] += dg_fragment_1[j_s]
 
-                    # 10 — dK += dVg @ S0^T  [W3/W4]
-                    # W3: S0[:, :DK/2]
-                    T.barrier_wait(bar_h4, (i_s + 0) % 2)
+                    # dg_last += sum(K * dK)
+                    T.reduce_sum(dg_fragment_1, dg_last_local_1, dim=0, clear=True)
+                    # Sg[S] dg
+                    dg_shared[block_S - 1] -= dg_last_local_1[0]
+                    # 循环携带依赖: 本轮对 dg_shared 的最后访问 -> 下轮 K-05 覆写,
+                    # 显式屏障避免 ThreadSync 把屏障插进下轮的散射 if 后再外提。
+                    T.tvm_storage_sync("shared")
+
+                    T.barrier_arrive(bar_08_1)
+                    T.barrier_wait(bar_08_1,(i_s+0)%2)
+                    # dK += dVg @ h（右半, 驻留右半; 直接累加, 与 07 的 dk_frag_r 同形）
                     if state_v_first:
                         T.gemm(
                             tmp_shared_2_3,
                             h_shared,
-                            dk_fragment_0,
+                            dk_frag_r,
                             clear_accum=False,
                         )
                     else:
                         T.gemm(
                             tmp_shared_2_3,
                             h_shared,
-                            dk_fragment_0,
+                            dk_frag_r,
                             transpose_B=True,
                             clear_accum=False,
                         )
-                    T.barrier_arrive(bar_h5)
-                    # W4: S0[:, DK/2:]
-                    T.barrier_wait(bar_h6, (i_s + 0) % 2)
+                    T.barrier_arrive(bar_08_2)
+                    T.barrier_wait(bar_08_3,(i_s)%2)
+                    # dK += dVg @ h（左半, S 已搬运左半）
                     if state_v_first:
                         T.gemm(
                             tmp_shared_2_3,
                             h_shared,
-                            dk_fragment_1,
+                            dk_frag_l,
                             clear_accum=False,
                         )
                     else:
                         T.gemm(
                             tmp_shared_2_3,
                             h_shared,
-                            dk_fragment_1,
+                            dk_frag_l,
                             transpose_B=True,
                             clear_accum=False,
                         )
-                    T.barrier_arrive(bar_h7)
+
                     T.barrier_arrive(bar_10)
                     T.barrier_wait(bar_10, (i_s + 0) % 2)
-                    T.barrier_wait(bar_11, (i_s + 0) % 2)
 
-                    # 11 — dS0 += K^T @ dVg (two half gemms, DK-split output)
-                    if state_v_first:
-                        T.gemm(
-                            tmp_shared_2_3,
-                            tmp_shared_2_2[:, : DK // 2],
-                            dh_fragment_0,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                        T.gemm(
-                            tmp_shared_2_3,
-                            tmp_shared_2_2[:, DK // 2 :],
-                            dh_fragment_1,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                    else:
-                        T.gemm(
-                            tmp_shared_2_2[:, : DK // 2],
-                            tmp_shared_2_3,
-                            dh_fragment_0,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                        T.gemm(
-                            tmp_shared_2_2[:, DK // 2 :],
-                            tmp_shared_2_3,
-                            dh_fragment_1,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                    T.barrier_arrive(bar_12)
+                    # 12
                     T.barrier_wait(bar_12, (i_s + 0) % 2)
+                    # dK += dP^T @ Q（左半/右半）
+                    T.gemm(
+                        tmp_shared_1_1,
+                        tmp_shared_2_1[:, :DK//2],
+                        dk_frag_l,
+                        transpose_A=True,
+                        clear_accum=False,
+                    )
+                    T.gemm(
+                        tmp_shared_1_1,
+                        tmp_shared_2_1[:, DK//2:],
+                        dk_frag_r,
+                        transpose_A=True,
+                        clear_accum=False,
+                    )
 
-                    # 12 — dK += dP^T @ Q (two half gemms, N-split output)
-                    T.gemm(
-                        tmp_shared_1_1,
-                        tmp_shared_2_1[:, : DK // 2],
-                        dk_fragment_0,
-                        transpose_A=True,
-                        clear_accum=False,
-                    )
-                    T.gemm(
-                        tmp_shared_1_1,
-                        tmp_shared_2_1[:, DK // 2 :],
-                        dk_fragment_1,
-                        transpose_A=True,
-                        clear_accum=False,
-                    )
                     T.barrier_arrive(bar_13)
                     T.barrier_wait(bar_13, (i_s + 0) % 2)
 
-                    # 13 — dOg = s * g * dO → S2[3]
-                    for j_s, j_v in T.Parallel(block_S, DV):
-                        tmp_shared_2_3[j_s, j_v] = (
-                            scale * do_shared[j_s, j_v] * g_exp_shared[j_s]
-                        )
-                    T.barrier_arrive(bar_14)
-
-                    # 14 — dS0 += Q^T @ dOg (two half gemms, DK-split output)
-                    T.barrier_wait(bar_14, (i_s + 0) % 2)
-                    if state_v_first:
-                        T.gemm(
-                            tmp_shared_2_3,
-                            tmp_shared_2_1[:, : DK // 2],
-                            dh_fragment_0,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                        T.gemm(
-                            tmp_shared_2_3,
-                            tmp_shared_2_1[:, DK // 2 :],
-                            dh_fragment_1,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                    else:
-                        T.gemm(
-                            tmp_shared_2_1[:, : DK // 2],
-                            tmp_shared_2_3,
-                            dh_fragment_0,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                        T.gemm(
-                            tmp_shared_2_1[:, DK // 2 :],
-                            tmp_shared_2_3,
-                            dh_fragment_1,
-                            transpose_A=True,
-                            clear_accum=False,
-                        )
-                    T.barrier_arrive(bar_15)
-
-                    # 15 — dK += dAs @ K (two half gemms, N-split output)
+                    # 15
                     T.barrier_wait(bar_15, (i_s + 0) % 2)
+                    # dK += dAs @ K（左半/右半）
                     T.gemm(
-                        tmp_shared_1_2,
-                        tmp_shared_2_2[:, : DK // 2],
-                        dk_fragment_0,
-                        clear_accum=False,
+                        tmp_shared_1_2, tmp_shared_2_2[:, :DK//2], dk_frag_l, clear_accum=False
                     )
                     T.gemm(
-                        tmp_shared_1_2,
-                        tmp_shared_2_2[:, DK // 2 :],
-                        dk_fragment_1,
-                        clear_accum=False,
+                        tmp_shared_1_2, tmp_shared_2_2[:, DK//2:], dk_frag_r, clear_accum=False
                     )
 
-                for j_s, j_k in T.Parallel(block_S, DK // 2):
+                for j_s, j_k in T.Parallel(block_S, DK//2):
                     if seq_start_idx + j_s < seq_end_idx:
-                        dk[batch_idx, seq_start_idx + j_s, bh, j_k] = (
-                            dk_fragment_0[j_s, j_k]
-                        )
-                for j_s, j_k in T.Parallel(block_S, DK // 2):
+                        dk[batch_idx, seq_start_idx + j_s, bh, j_k] = dk_frag_l[j_s, j_k]
+                for j_s, j_k in T.Parallel(block_S, DK//2):
                     if seq_start_idx + j_s < seq_end_idx:
-                        dk[
-                            batch_idx, seq_start_idx + j_s, bh, DK // 2 + j_k
-                        ] = dk_fragment_1[j_s, j_k]
-                if use_dht:
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            dh0[bb, bh, j_v, j_k] = dh_fragment_0[j_v, j_k]
-                            dh0[bb, bh, j_v, DK // 2 + j_k] = dh_fragment_1[
-                                j_v, j_k
-                            ]
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            dh0[bb, bh, j_k, j_v] = dh_fragment_0[j_k, j_v]
-                            dh0[bb, bh, DK // 2 + j_k, j_v] = dh_fragment_1[
-                                j_k, j_v
-                            ]
+                        dk[batch_idx, seq_start_idx + j_s, bh, DK//2 + j_k] = dk_frag_r[j_s, j_k]
 
             elif tx < 384:
                 T.set_max_nreg(CONSUMER_A_NREG, 1)
 
                 for i_s in T.serial(num_iters):
+                    cur_idx = chunk_start_idx + num_iters - i_s - 1
                     T.barrier_arrive(bar_00)
 
                     # 00
@@ -865,103 +877,43 @@ def tilelang_fused_chunk_gdr_bwd(
                         a_fragment[j_s, j_t] *= mask_fragment[j_s, j_t]
                     # S1[2] Ag
                     T.copy(a_fragment, tmp_shared_1_2)
+                    # issue 30 opt1, q_shared -> tmp_shared_2_1
+                    # 读 Q 必须在 bar_03.arrive 之前完成: K 在 bar_03 完成后立即
+                    # 覆写 tmp_shared_2_1 为 dV', 若读放在 arrive 之后, 且 A 的
+                    # arrive 是最后到达的, K 的写将与 A 的读并发(A 读到 dV' 垃圾)。
+                    T.copy(tmp_shared_2_1, odot_fragment_2)
                     T.barrier_arrive(bar_03)
-                    # issue 30 opt1: Q is reloaded from global in step 09 instead
-                    # of being pre-staged here (avoids fragment layout seeding)
                     # 03
                     T.barrier_wait(bar_03, (i_s + 0) % 2)
-                    # U = K @ S0  (W1: S0[:, :DK/2])
-                    T.barrier_wait(bar_h0, (i_s + 0) % 2)
+                    # 1st use of h_share,not need to mv, prefretch
+                    # U = K @ S0
                     if state_v_first:
-                        T.gemm(
-                            k_shared[:, : DK // 2],
-                            h_shared,
-                            u_fragment,
-                            transpose_B=True,
-                            clear_accum=True,
-                        )
+                        T.gemm(k_shared[:,:DK//2],h_shared, u_fragment,transpose_B=True,clear_accum=True,)
                     else:
-                        T.gemm(
-                            k_shared[:, : DK // 2],
-                            h_shared,
-                            u_fragment,
-                            clear_accum=True,
-                        )
-                    T.barrier_arrive(bar_h1)
-                    # Ag was staged to S1[2] in step 02; releasing bar_04 here
-                    # (instead of after the W2 gemm, which is deferred) keeps
-                    # the merged S+K consumer and the kv-store warp moving.
+                        T.gemm(k_shared[:,:DK//2], h_shared, u_fragment, clear_accum=True)
+                    # egaer implement:copy_immeidately 
+                    if state_v_first:
+                        T.copy(h[batch_idx,cur_idx,bh,0:DV,DK//2:DK],h_shared)
+                        T.gemm(k_shared[:,DK//2:],h_shared, u_fragment,transpose_B=True,clear_accum=False)
+                    else:
+                        T.copy(h[batch_idx,cur_idx,bh,DK//2:DK,0:DV],h_shared)
+                        T.gemm(k_shared[:,DK//2:], h_shared, u_fragment, clear_accum=False)
                     T.barrier_arrive(bar_04)
-
                     # 04
                     T.barrier_wait(bar_04, (i_s + 0) % 2)
-                    # W2: S0[:, DK/2:] — U must be complete before it is
-                    # staged to S2[3] and used for W below; deferring this
-                    # gemm past the V-reload left S2[3] (=U) and W holding
-                    # only the W1 partial sum. Doing it here also consumes
-                    # h_shared (W2) before bar_h3 releases the h-producer to
-                    # overwrite it with W3.
-                    T.barrier_wait(bar_h2, (i_s + 0) % 2)
-                    if state_v_first:
-                        T.gemm(
-                            k_shared[:, DK // 2 :],
-                            h_shared,
-                            u_fragment,
-                            transpose_B=True,
-                            clear_accum=False,
-                        )
-                    else:
-                        T.gemm(
-                            k_shared[:, DK // 2 :],
-                            h_shared,
-                            u_fragment,
-                            clear_accum=False,
-                        )
-                    T.barrier_arrive(bar_h3)
                     # S2[3] U
                     T.copy(u_fragment, tmp_shared_2_3)
-                    # W = V - g * U (V reloaded from global; v_shared dropped to
-                    # fit the 99KB smem budget)
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
+                    # W = V - g * U
+                    for j_s, j_v in T.Parallel(block_S, DV):
                         u_fragment[j_s, j_v] *= -g_exp_shared[j_s]
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        u_fragment[j_s, DV // 2 + j_v] *= -g_exp_shared[j_s]
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        if (
-                            seq_start_idx
-                            + (num_iters - 1 - i_s) * block_S
-                            + j_s
-                            < seq_end_idx
-                        ):
-                            u_fragment[j_s, j_v] += T.Cast(
-                                accum_dtype,
-                                v[
-                                    batch_idx,
-                                    seq_start_idx
-                                    + (num_iters - 1 - i_s) * block_S
-                                    + j_s,
-                                    bh,
-                                    j_v,
-                                ],
-                            )
-                    for j_s, j_v in T.Parallel(block_S, DV // 2):
-                        if (
-                            seq_start_idx
-                            + (num_iters - 1 - i_s) * block_S
-                            + j_s
-                            < seq_end_idx
-                        ):
-                            u_fragment[j_s, DV // 2 + j_v] += T.Cast(
-                                accum_dtype,
-                                v[
-                                    batch_idx,
-                                    seq_start_idx
-                                    + (num_iters - 1 - i_s) * block_S
-                                    + j_s,
-                                    bh,
-                                    DV // 2 + j_v,
-                                ],
-                            )
+                    for j_s, j_v in T.Parallel(block_S, DV):
+                        if seq_start_idx + (num_iters - i_s - 1) * block_S + j_s < seq_end_idx:
+                            u_fragment[j_s, j_v] += v[
+                                batch_idx,
+                                seq_start_idx + (num_iters - i_s - 1) * block_S + j_s,
+                                bh,
+                                j_v,
+                            ]
                     # S2[2] W
                     T.copy(u_fragment, tmp_shared_2_2)
                     T.barrier_arrive(bar_05)
@@ -1005,10 +957,6 @@ def tilelang_fused_chunk_gdr_bwd(
                     T.copy(tmp_shared_1_1, p_fragment)
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         p_fragment[j_s, j_t] *= dp_fragment[j_s, j_t]
-                    # T.copy(p_fragment, tmp_shared_1_1)
-                    # for j_s, j_t in T.Parallel(block_S, block_S):
-                    #     p_fragment[j_s, j_t] -= tmp_shared_1_1[j_t, j_s]
-                    # T.reduce_sum(p_fragment, dg_fragment_2, dim=1, clear=True)
                     # dP = s * G * dPg
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         dp_fragment[j_s, j_t] *= mask_fragment[j_s, j_t]
@@ -1016,156 +964,81 @@ def tilelang_fused_chunk_gdr_bwd(
                         dp_fragment[j_s, j_t] *= scale
                     # S1[1] dP
                     T.copy(dp_fragment, tmp_shared_1_1)
-                    T.barrier_arrive(bar_08)
+                    # 08_1
+                    T.barrier_arrive(bar_08_1)
+                    T.barrier_wait(bar_08_1,(i_s+0)%2)
+                    # dQ = dO @ h（right part）
+                    if state_v_first:
+                        T.gemm(
+                            do_shared,
+                            h_shared,
+                            dq_frag_r,
+                            clear_accum=True,
+                        )
+                    else:
+                        T.gemm(
+                            do_shared,
+                            h_shared,
+                            dq_frag_r,
+                            transpose_B=True,
+                            clear_accum=True,
+                        )
+                    # 08_2
+                    T.barrier_arrive(bar_08_2)
 
-                    # 08
-                    T.barrier_wait(bar_08, (i_s + 0) % 2)
-                    # dQ = dO @ S0^T  (W3: S0[:, :DK/2])
-                    T.barrier_wait(bar_h4, (i_s + 0) % 2)
+                    T.barrier_wait(bar_08_3, (i_s + 0) % 2)
+                    # dQ = dO @ h（左半, S 已搬运左半）
                     if state_v_first:
                         T.gemm(
                             do_shared,
                             h_shared,
-                            dq_fragment_0,
+                            dq_frag_l,
                             clear_accum=True,
                         )
                     else:
                         T.gemm(
                             do_shared,
                             h_shared,
-                            dq_fragment_0,
+                            dq_frag_l,
                             transpose_B=True,
                             clear_accum=True,
                         )
-                    T.barrier_arrive(bar_h5)
-                    # W4: S0[:, DK/2:]
-                    T.barrier_wait(bar_h6, (i_s + 0) % 2)
-                    if state_v_first:
-                        T.gemm(
-                            do_shared,
-                            h_shared,
-                            dq_fragment_1,
-                            clear_accum=True,
-                        )
-                    else:
-                        T.gemm(
-                            do_shared,
-                            h_shared,
-                            dq_fragment_1,
-                            transpose_B=True,
-                            clear_accum=True,
-                        )
-                    T.barrier_arrive(bar_h7)
+    
                     T.barrier_arrive(bar_09)
 
                     # 09
                     T.barrier_wait(bar_09, (i_s + 0) % 2)
-                    # dQ = s * g * dQ
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dq_fragment_0[j_s, j_k] *= g_exp_shared[j_s]
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dq_fragment_1[j_s, j_k] *= g_exp_shared[j_s]
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dq_fragment_0[j_s, j_k] *= scale
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dq_fragment_1[j_s, j_k] *= scale
+                    # dQ = s * g * dQ（右半/左半）
+                    for j_s, j_k in T.Parallel(block_S, DK//2):
+                        dq_frag_r[j_s, j_k] *= g_exp_shared[j_s]
+                        dq_frag_l[j_s, j_k] *= g_exp_shared[j_s]
+                    for j_s, j_k in T.Parallel(block_S, DK//2):
+                        dq_frag_r[j_s, j_k] *= scale
+                        dq_frag_l[j_s, j_k] *= scale
                     # S2[1] Q
-                    # dg += sum(Q * dQ); reload Q from global (tmp_shared_2_1 was
-                    # overwritten), stage it back to S2[1] and fuse the multiply
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        if (
-                            seq_start_idx
-                            + (num_iters - 1 - i_s) * block_S
-                            + j_s
-                            < seq_end_idx
-                        ):
-                            tmp_shared_2_1[j_s, j_k] = q[
-                                batch_idx,
-                                seq_start_idx
-                                + (num_iters - 1 - i_s) * block_S
-                                + j_s,
-                                bhg,
-                                j_k,
-                            ]
-                            odot_fragment_2_0[j_s, j_k] = T.Cast(
-                                qkva_dtype,
-                                T.Cast(
-                                    accum_dtype,
-                                    q[
-                                        batch_idx,
-                                        seq_start_idx
-                                        + (num_iters - 1 - i_s) * block_S
-                                        + j_s,
-                                        bhg,
-                                        j_k,
-                                    ],
-                                )
-                                * dq_fragment_0[j_s, j_k],
-                            )
-                        else:
-                            tmp_shared_2_1[j_s, j_k] = 0
-                            odot_fragment_2_0[j_s, j_k] = 0
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        if (
-                            seq_start_idx
-                            + (num_iters - 1 - i_s) * block_S
-                            + j_s
-                            < seq_end_idx
-                        ):
-                            tmp_shared_2_1[j_s, DK // 2 + j_k] = q[
-                                batch_idx,
-                                seq_start_idx
-                                + (num_iters - 1 - i_s) * block_S
-                                + j_s,
-                                bhg,
-                                DK // 2 + j_k,
-                            ]
-                            odot_fragment_2_1[j_s, j_k] = T.Cast(
-                                qkva_dtype,
-                                T.Cast(
-                                    accum_dtype,
-                                    q[
-                                        batch_idx,
-                                        seq_start_idx
-                                        + (num_iters - 1 - i_s) * block_S
-                                        + j_s,
-                                        bhg,
-                                        DK // 2 + j_k,
-                                    ],
-                                )
-                                * dq_fragment_1[j_s, j_k],
-                            )
-                        else:
-                            tmp_shared_2_1[j_s, DK // 2 + j_k] = 0
-                            odot_fragment_2_1[j_s, j_k] = 0
-                    T.reduce_sum(odot_fragment_2_0, dg_fragment_2, dim=1, clear=True)
-                    T.reduce_sum(odot_fragment_2_1, dg_half_2, dim=1, clear=True)
+                    T.copy(odot_fragment_2, tmp_shared_2_1)
+                    # dg += sum(Q * dQ) 移到 10 阶段（经 dqkv_shared 中转）
                     T.barrier_arrive(bar_10)
 
                     # 10
                     T.barrier_wait(bar_10, (i_s + 0) % 2)
-                    # dQ += dP @ K (two half gemms, N-split output)
+                    T.copy(dq_frag_l, dqkv_shared[:, :DK//2])
+                    T.copy(dq_frag_r, dqkv_shared[:, DK//2:])
+                    T.barrier_arrive(bar_s4_dot_a)
+                    T.barrier_wait(bar_s4_dot_a, (i_s + 0) % 2)
+                    for j_s, j_k in T.Parallel(block_S, DK):
+                        odot_fragment_2[j_s, j_k] *= dqkv_shared[j_s, j_k]
+                    T.reduce_sum(odot_fragment_2, dg_fragment_2, dim=1, clear=True)
+                    # dQ += dP @ K（左半/右半）
                     T.gemm(
-                        tmp_shared_1_1,
-                        tmp_shared_2_2[:, : DK // 2],
-                        dq_fragment_0,
-                        clear_accum=False,
+                        tmp_shared_1_1, tmp_shared_2_2[:, :DK//2], dq_frag_l, clear_accum=False
                     )
                     T.gemm(
-                        tmp_shared_1_1,
-                        tmp_shared_2_2[:, DK // 2 :],
-                        dq_fragment_1,
-                        clear_accum=False,
+                        tmp_shared_1_1, tmp_shared_2_2[:, DK//2:], dq_frag_r, clear_accum=False
                     )
                     # S2[S] dQ
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dqkv_shared[j_s, j_k] = T.Cast(
-                            qkva_dtype, dq_fragment_0[j_s, j_k]
-                        )
-                    for j_s, j_k in T.Parallel(block_S, DK // 2):
-                        dqkv_shared[j_s, DK // 2 + j_k] = T.Cast(
-                            qkva_dtype, dq_fragment_1[j_s, j_k]
-                        )
+                    T.copy(dq_frag_l, dqkv_shared[:, :DK//2])
+                    T.copy(dq_frag_r, dqkv_shared[:, DK//2:])
                     T.barrier_arrive(bar_11)
 
                     # 11, 12
@@ -1221,12 +1094,19 @@ def tilelang_fused_chunk_gdr_bwd(
                         )
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         a_fragment[j_s, j_t] -= p_fragment[j_s, j_t]
-                    T.reduce_sum(a_fragment, dg_a_2, dim=1, clear=True)
-                    # Sg[S] dg
+                    # a_fragment 的布局已被 reinterpret 换位环固定, 与 dg_fragment_2
+                    # (stage 10 的 reduce 已固定的行划分) 无法同时满足, 布局求解无解:
+                    # 用独立目标 dg_fragment_2b 解耦, 在 Sg 写回时合并
+                    T.reduce_sum(a_fragment, dg_fragment_2b, dim=1, clear=True)
+                    # Sg[S] dg (两个片段行划分不同, 分开写回避免同一循环布局冲突)
+                    # 与 K 分支同理: 两处散射写回线程集不同且跨迭代复用 dg_shared,
+                    # 显式屏障保证 ThreadSync 不在发散 if 内插屏障（#3042）。
+                    T.tvm_storage_sync("shared")
                     for j_s in T.Parallel(block_S):
-                        dg_shared[j_s] += (
-                            dg_fragment_2[j_s] + dg_half_2[j_s] + dg_a_2[j_s]
-                        )
+                        dg_shared[j_s] += dg_fragment_2[j_s]
+                    T.tvm_storage_sync("shared")
+                    for j_s in T.Parallel(block_S):
+                        dg_shared[j_s] += dg_fragment_2b[j_s]
                     # db = sum((dAb * Ar)^T)
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         a_fragment[j_s, j_t] = tmp_shared_1_3[j_t, j_s]
@@ -1319,6 +1199,7 @@ def tilelang_fused_chunk_gdr_bwd(
                             tmp_shared_2_1,
                             barrier=bar_00,
                         )
+                        
 
                     if num_iters > 0:
                         T.barrier_arrive(bar_00)
@@ -1385,16 +1266,15 @@ def tilelang_fused_chunk_gdr_bwd(
                             T.copy(dqkv_shared, dq[batch_idx, left:right, bh, 0:DK])
 
                 elif tx < 384 + 96:  # TODO: set padding to 0
-                    # h windows serve the CURRENT consumer iteration; a/do/b serve the next.
-                    for i_s in T.serial(num_iters):
-                        chunk_idx = num_iters - i_s - 1
+                    for i_s in T.serial(num_iters - 1):
+                        chunk_idx = num_iters - i_s - 2
                         left = seq_start_idx + chunk_idx * block_S
                         right = left + block_S
 
                         T.barrier_arrive(bar_02)
                         T.barrier_wait(bar_02, (i_s + 0) % 2)
 
-                        # W1: S0[:, :DK/2]
+                        T.barrier_wait(bar_10, (i_s + 0) % 2)
                         if state_v_first:
                             T.tma_copy(
                                 h[
@@ -1402,10 +1282,10 @@ def tilelang_fused_chunk_gdr_bwd(
                                     chunk_start_idx + chunk_idx,
                                     bh,
                                     0:DV,
-                                    0:DK // 2,
+                                    0:DK//2,
                                 ],
                                 h_shared,
-                                barrier=bar_h0,
+                                barrier=bar_02,
                             )
                         else:
                             T.tma_copy(
@@ -1413,129 +1293,33 @@ def tilelang_fused_chunk_gdr_bwd(
                                     batch_idx,
                                     chunk_start_idx + chunk_idx,
                                     bh,
-                                    0:DK // 2,
+                                    0:DK//2,
                                     0:DV,
                                 ],
                                 h_shared,
-                                barrier=bar_h0,
-                            )
-                        # arrive AFTER tma_copy: expect_tx must be registered
-                        # before the arrives can complete the phase.
-                        T.barrier_arrive(bar_h0)
-                        T.barrier_wait(bar_h1, (i_s + 0) % 2)
-
-                        # W2: S0[:, DK/2:]
-                        if state_v_first:
-                            T.tma_copy(
-                                h[
-                                    batch_idx,
-                                    chunk_start_idx + chunk_idx,
-                                    bh,
-                                    0:DV,
-                                    DK // 2 : DK,
-                                ],
-                                h_shared,
-                                barrier=bar_h2,
-                            )
-                        else:
-                            T.tma_copy(
-                                h[
-                                    batch_idx,
-                                    chunk_start_idx + chunk_idx,
-                                    bh,
-                                    DK // 2 : DK,
-                                    0:DV,
-                                ],
-                                h_shared,
-                                barrier=bar_h2,
-                            )
-                        T.barrier_arrive(bar_h2)
-                        T.barrier_wait(bar_h3, (i_s + 0) % 2)
-
-                        # W3: S0[:, :DK/2]
-                        if state_v_first:
-                            T.tma_copy(
-                                h[
-                                    batch_idx,
-                                    chunk_start_idx + chunk_idx,
-                                    bh,
-                                    0:DV,
-                                    0:DK // 2,
-                                ],
-                                h_shared,
-                                barrier=bar_h4,
-                            )
-                        else:
-                            T.tma_copy(
-                                h[
-                                    batch_idx,
-                                    chunk_start_idx + chunk_idx,
-                                    bh,
-                                    0:DK // 2,
-                                    0:DV,
-                                ],
-                                h_shared,
-                                barrier=bar_h4,
-                            )
-                        T.barrier_arrive(bar_h4)
-                        T.barrier_wait(bar_h5, (i_s + 0) % 2)
-
-                        # W4: S0[:, DK/2:]
-                        if state_v_first:
-                            T.tma_copy(
-                                h[
-                                    batch_idx,
-                                    chunk_start_idx + chunk_idx,
-                                    bh,
-                                    0:DV,
-                                    DK // 2 : DK,
-                                ],
-                                h_shared,
-                                barrier=bar_h6,
-                            )
-                        else:
-                            T.tma_copy(
-                                h[
-                                    batch_idx,
-                                    chunk_start_idx + chunk_idx,
-                                    bh,
-                                    DK // 2 : DK,
-                                    0:DV,
-                                ],
-                                h_shared,
-                                barrier=bar_h6,
-                            )
-                        T.barrier_arrive(bar_h6)
-                        # No bar_h7 wait here: W4 is consumed by both consumers
-                        # during this iteration (steps 08/10), and h_shared is
-                        # only overwritten again after bar_02 of the NEXT
-                        # iteration completes, which happens strictly after both
-                        # consumers finished their step-02 work.
-
-                        if i_s < num_iters - 1:
-                            chunk_idx_next = num_iters - i_s - 2
-                            left_next = seq_start_idx + chunk_idx_next * block_S
-                            right_next = left_next + block_S
-
-                            T.barrier_wait(bar_14, (i_s + 0) % 2)
-                            T.tma_copy(
-                                a[batch_idx, left_next:right_next, bh, 0:block_S],
-                                a_shared,
                                 barrier=bar_02,
                             )
 
-                            T.tma_copy(
-                                do[batch_idx, left_next:right_next, bh, 0:DV],
-                                do_shared,
-                                barrier=bar_02,
-                            )
+                        T.barrier_wait(bar_14, (i_s + 0) % 2)
+                        T.tma_copy(
+                            a[batch_idx, left:right, bh, 0:block_S],
+                            a_shared,
+                            barrier=bar_02,
+                        )
 
-                            T.barrier_wait(bar_15, (i_s + 0) % 2)
-                            for j_s in T.Parallel(block_S):
-                                b_shared[j_s] = b[batch_idx, left_next + j_s, bh]
+                        T.tma_copy(
+                            do[batch_idx, left:right, bh, 0:DV],
+                            do_shared,
+                            barrier=bar_02,
+                        )
+
+                        T.barrier_wait(bar_15, (i_s + 0) % 2)
+                        for j_s in T.Parallel(block_S):
+                            b_shared[j_s] = b[batch_idx, left + j_s, bh]
 
                     if num_iters > 0:
                         T.barrier_wait(bar_00, (num_iters - 1) % 2)
+                        T.barrier_arrive(bar_02)
 
                 else:
                     if bb == batch_size - 1:
@@ -1629,6 +1413,14 @@ def fused_gdr_bwd(
     dg = torch.empty_like(g)
     db = torch.empty_like(b)
     dh0 = torch.empty_like(dht)
+    # dS0 的 HBM 暂存（每轮写回, 半块预取重载）
+    dh_tmp = torch.empty(
+        (real_batch_size, H, 2, V, K)
+        if state_v_first
+        else (real_batch_size, H, 2, K, V),
+        dtype=k.dtype,
+        device=k.device,
+    )
 
     tilelang_fused_chunk_gdr_bwd_kernel = tilelang_fused_chunk_gdr_bwd(
         H,
@@ -1658,6 +1450,7 @@ def fused_gdr_bwd(
         g,
         b,
         h,
+        dh_tmp,
         cu_seqlens,
         chunk_offsets,
         dq,

@@ -20,7 +20,7 @@ elif tilelang.contrib.nvcc.get_target_compute_version() in ["10.0", "10.3"]:
 elif tilelang.contrib.nvcc.get_target_compute_version() == "12.0":
     from .blackwell_sm120 import fused_gdr_fwd, fused_gdr_h, kkt_solve,fused_gdr_bwd
     from .blackwell_sm120 import get_warmup_chunks, get_warmup_chunks_bidi, correct_initial_states, correct_terminal_states
-    fused_gdr_dh = None
+    from .blackwell_sm120.cp_bwd import fused_gdr_dh_ws as fused_gdr_dh
     CHUNK_SIZE = 32
 else:
     raise ValueError(f"FlashQLA now support sm90, sm100, sm103 and sm120 only. Found compute version: {tilelang.contrib.nvcc.get_target_compute_version()}")
@@ -105,8 +105,7 @@ def chunk_gated_delta_rule_bwd(
 ):
     if fused_gdr_bwd is None:
         raise NotImplementedError(
-            "Backward pass is not implemented for SM120 (Blackwell)."
-            "Only forward pass is supported on this architecture."
+            "Backward pass is not implemented for this architecture."
         )
 
     batch_size, num_tokens, num_k_heads, _ = k.shape

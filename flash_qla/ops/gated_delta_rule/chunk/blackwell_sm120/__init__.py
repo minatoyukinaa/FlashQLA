@@ -6,6 +6,7 @@ from .fused_bwd import fused_gdr_bwd
 from .prepare_h import fused_gdr_h
 from .kkt_solve import kkt_solve
 from .cp_fwd import get_warmup_chunks, get_warmup_chunks_bidi, correct_initial_states, correct_terminal_states
+from .cp_bwd import fused_gdr_dh_ws
 
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "get_warmup_chunks_bidi",
     "correct_initial_states",
     "correct_terminal_states",
+    "fused_gdr_dh_ws",
 ]
