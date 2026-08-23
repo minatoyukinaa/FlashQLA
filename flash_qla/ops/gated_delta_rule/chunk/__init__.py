@@ -17,13 +17,13 @@ elif tilelang.contrib.nvcc.get_target_compute_version() in ["10.0", "10.3"]:
     from .blackwell import get_warmup_chunks, get_warmup_chunks_bidi, correct_initial_states, correct_terminal_states
     from .blackwell.cp_bwd import fused_gdr_dh_ws as fused_gdr_dh
     CHUNK_SIZE = 64
-elif tilelang.contrib.nvcc.get_target_compute_version() == "12.0":
-    from .blackwell_sm120 import fused_gdr_fwd, fused_gdr_h, kkt_solve,fused_gdr_bwd
+elif tilelang.contrib.nvcc.get_target_compute_version() in ["12.0", "12.1"]:
+    from .blackwell_sm120 import fused_gdr_fwd, fused_gdr_h, kkt_solve
     from .blackwell_sm120 import get_warmup_chunks, get_warmup_chunks_bidi, correct_initial_states, correct_terminal_states
     from .blackwell_sm120.cp_bwd import fused_gdr_dh_ws as fused_gdr_dh
     CHUNK_SIZE = 32
 else:
-    raise ValueError(f"FlashQLA now support sm90, sm100, sm103 and sm120 only. Found compute version: {tilelang.contrib.nvcc.get_target_compute_version()}")
+    raise ValueError(f"FlashQLA now support sm90, sm100, sm103, sm120 and sm121 only. Found compute version: {tilelang.contrib.nvcc.get_target_compute_version()}")
 from .cp_context import intra_card_cp_preprocess, intra_card_cp_preprocess_bwd, _calc_cp_seqs, _create_cu_seqlens
 
 from flash_qla.utils import input_guard
@@ -172,9 +172,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         initial_state: torch.Tensor | None = None,
         output_final_state: bool = False,
         cu_seqlens: torch.LongTensor | None = None,
+        use_qk_l2norm_in_kernel: bool = False,
         state_v_first: bool = False,
         auto_cp: bool = True,
-        use_qk_l2norm_in_kernel: bool = False,
         enable_fwd_cp_cache: bool = True,
     ):
         q_rstd, k_rstd = None, None
@@ -393,9 +393,9 @@ def chunk_gated_delta_rule(
         initial_state,
         output_final_state,
         cu_seqlens,
+        use_qk_l2norm_in_kernel,
         state_v_first,
         auto_cp,
-        use_qk_l2norm_in_kernel,
         enable_fwd_cp_cache,
     )
 
