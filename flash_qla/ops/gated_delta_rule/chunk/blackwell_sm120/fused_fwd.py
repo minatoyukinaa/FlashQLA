@@ -720,7 +720,11 @@ def fused_gdr_fwd(
             dtype=torch.float32,
             device=k.device,
         )
-    o = torch.empty_like(v)
+    # A varlen input can use a backing token buffer that extends arbitrarily
+    # far beyond cu_seqlens[-1].  The kernel only visits real sequences (and
+    # clears at most one trailing tile), so initialize the whole output to
+    # keep the remaining padding deterministic and NaN-free.
+    o = torch.zeros_like(v) if is_varlen else torch.empty_like(v)
 
 
     block_DV = 64
