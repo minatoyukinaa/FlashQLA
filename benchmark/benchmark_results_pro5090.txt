@@ -1,0 +1,534 @@
+GPU: NVIDIA GeForce RTX 5090
+Models: Qwen3.5 family (397B, 122B, 35B, 27B, 9B, 4B, 2B, 0.8B), d=128
+Config: Warmup=10, Repeats=100, Backend=cudagraph
+Library Versions:
+  torch: 2.12.1+cu130 | fla: 0.5.2 | flashinfer: 0.6.17 | tilelang: 0.1.13
+==============================================================================================================
+
+>>> FORWARD BENCHMARKS
+Model Config     Seqlens            h_qk   h_v    flash_qla [fwd]    FI [fwd]   FLA [fwd]    vs FLA    vs FI
+------------------------------------------------------------------------------------------------------------
+2026-08-27 14:05:05  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:05:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:05:11  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:05:20  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:05:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:05:33  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP8    1x32768               2     8       0.550ms     0.564ms     1.382ms     2.51x    1.03x
+397B/122B TP8    1x16384               2     8       0.308ms     0.315ms     0.673ms     2.18x    1.02x
+397B/122B TP8    1x8192                2     8       0.193ms     0.188ms     0.326ms     1.69x    0.97x
+397B/122B TP8    1x4096                2     8       0.113ms     0.157ms     0.174ms     1.54x    1.40x
+397B/122B TP8    1x2048                2     8       0.079ms     0.098ms     0.099ms     1.25x    1.25x
+397B/122B TP8    28672+4096            2     8       0.540ms     0.571ms     1.267ms     2.35x    1.06x
+397B/122B TP8    24576+8192            2     8       0.528ms     0.567ms     1.152ms     2.18x    1.07x
+397B/122B TP8    16384+16384           2     8       0.504ms     0.571ms     0.918ms     1.82x    1.13x
+397B/122B TP8    8192+24576            2     8       0.529ms     0.572ms     1.154ms     2.18x    1.08x
+397B/122B TP8    4096+28672            2     8       0.540ms     0.573ms     1.270ms     2.35x    1.06x
+397B/122B TP8    12288+4096            2     8       0.297ms     0.314ms     0.557ms     1.88x    1.06x
+397B/122B TP8    6144+2048             2     8       0.182ms     0.188ms     0.269ms     1.48x    1.04x
+397B/122B TP8    4096+4096             2     8       0.170ms     0.193ms     0.209ms     1.23x    1.14x
+397B/122B TP8    2048+6144             2     8       0.181ms     0.191ms     0.268ms     1.48x    1.06x
+397B/122B TP8    1024+7168             2     8       0.187ms     0.196ms     0.298ms     1.59x    1.05x
+397B/122B TP8    8192x4                2     8       0.480ms     0.575ms     0.707ms     1.47x    1.20x
+2026-08-27 14:06:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:06:50  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP8    4096x8                2     8       0.317ms     0.515ms     0.700ms     2.20x    1.62x
+397B/122B TP8    2048x4                2     8       0.159ms     0.190ms     0.152ms     0.96x    1.19x
+397B/122B TP8    1024x8                2     8       0.083ms     0.134ms     0.132ms     1.59x    1.61x
+
+2026-08-27 14:07:02  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:07:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:07:07  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:07:16  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:07:18  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:07:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP4    1x32768               4    16       0.886ms     0.942ms     1.864ms     2.10x    1.06x
+397B/122B TP4    1x16384               4    16       0.508ms     0.550ms     0.929ms     1.83x    1.08x
+397B/122B TP4    1x8192                4    16       0.286ms     0.298ms     0.446ms     1.56x    1.04x
+397B/122B TP4    1x4096                4    16       0.171ms     0.169ms     0.213ms     1.24x    0.99x
+397B/122B TP4    1x2048                4    16       0.101ms     0.148ms     0.116ms     1.14x    1.46x
+397B/122B TP4    28672+4096            4    16       0.879ms     0.950ms     1.785ms     2.03x    1.08x
+397B/122B TP4    24576+8192            4    16       0.875ms     0.952ms     1.664ms     1.90x    1.09x
+397B/122B TP4    16384+16384           4    16       0.863ms     0.953ms     1.429ms     1.66x    1.10x
+397B/122B TP4    8192+24576            4    16       0.877ms     0.955ms     1.669ms     1.90x    1.09x
+397B/122B TP4    4096+28672            4    16       0.882ms     0.957ms     1.792ms     2.03x    1.09x
+397B/122B TP4    12288+4096            4    16       0.498ms     0.553ms     0.829ms     1.67x    1.11x
+397B/122B TP4    6144+2048             4    16       0.283ms     0.300ms     0.398ms     1.41x    1.06x
+397B/122B TP4    4096+4096             4    16       0.276ms     0.304ms     0.339ms     1.23x    1.10x
+397B/122B TP4    2048+6144             4    16       0.282ms     0.304ms     0.398ms     1.41x    1.08x
+397B/122B TP4    1024+7168             4    16       0.284ms     0.302ms     0.428ms     1.50x    1.06x
+2026-08-27 14:08:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:08:40  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP4    8192x4                4    16       0.641ms     1.026ms     1.395ms     2.18x    1.60x
+397B/122B TP4    4096x8                4    16       0.654ms     0.525ms     1.419ms     2.17x    0.80x
+397B/122B TP4    2048x4                4    16       0.159ms     0.262ms     0.330ms     2.07x    1.64x
+397B/122B TP4    1024x8                4    16       0.166ms     0.138ms     0.342ms     2.06x    0.83x
+
+2026-08-27 14:08:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:08:56  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:08:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:09:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:09:08  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:09:19  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP2    1x32768               8    32       1.647ms     1.749ms     2.889ms     1.75x    1.06x
+397B/122B TP2    1x16384               8    32       0.866ms     0.954ms     1.416ms     1.63x    1.10x
+397B/122B TP2    1x8192                8    32       0.489ms     0.555ms     0.710ms     1.45x    1.13x
+397B/122B TP2    1x4096                8    32       0.277ms     0.302ms     0.341ms     1.23x    1.09x
+397B/122B TP2    1x2048                8    32       0.162ms     0.173ms     0.157ms     0.97x    1.07x
+397B/122B TP2    28672+4096            8    32       1.637ms     3.547ms     2.887ms     1.76x    2.17x
+397B/122B TP2    24576+8192            8    32       1.635ms     3.043ms     2.870ms     1.76x    1.86x
+2026-08-27 14:10:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:10:13  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP2    16384+16384           8    32       1.287ms     2.036ms     2.825ms     2.19x    1.58x
+397B/122B TP2    8192+24576            8    32       1.637ms     3.042ms     2.931ms     1.79x    1.86x
+397B/122B TP2    4096+28672            8    32       1.637ms     3.558ms     2.977ms     1.82x    2.17x
+397B/122B TP2    12288+4096            8    32       0.848ms     1.542ms     1.405ms     1.66x    1.82x
+397B/122B TP2    6144+2048             8    32       0.477ms     0.770ms     0.702ms     1.47x    1.61x
+397B/122B TP2    4096+4096             8    32       0.323ms     0.518ms     0.693ms     2.15x    1.60x
+397B/122B TP2    2048+6144             8    32       0.477ms     0.771ms     0.714ms     1.50x    1.62x
+397B/122B TP2    1024+7168             8    32       0.478ms     0.898ms     0.728ms     1.52x    1.88x
+397B/122B TP2    8192x4                8    32       1.315ms     1.035ms     2.876ms     2.19x    0.79x
+397B/122B TP2    4096x8                8    32       1.337ms     1.059ms     2.921ms     2.19x    0.79x
+397B/122B TP2    2048x4                8    32       0.333ms     0.273ms     0.708ms     2.12x    0.82x
+397B/122B TP2    1024x8                8    32       0.338ms     0.290ms     0.739ms     2.19x    0.86x
+
+2026-08-27 14:10:50  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:11:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+397B/122B TP1    1x32768              16    64       2.580ms     4.057ms     5.695ms     2.21x    1.57x
+397B/122B TP1    1x16384              16    64       1.291ms     2.035ms     2.796ms     2.17x    1.58x
+397B/122B TP1    1x8192               16    64       0.646ms     1.032ms     1.380ms     2.14x    1.60x
+397B/122B TP1    1x4096               16    64       0.326ms     0.522ms     0.689ms     2.11x    1.60x
+397B/122B TP1    1x2048               16    64       0.161ms     0.263ms     0.323ms     2.01x    1.64x
+397B/122B TP1    28672+4096           16    64       2.411ms     3.554ms     5.821ms     2.41x    1.47x
+397B/122B TP1    24576+8192           16    64       2.644ms     3.051ms     5.874ms     2.22x    1.15x
+397B/122B TP1    16384+16384          16    64       2.630ms     2.052ms     6.071ms     2.31x    0.78x
+397B/122B TP1    8192+24576           16    64       2.634ms     3.073ms     6.018ms     2.28x    1.17x
+397B/122B TP1    4096+28672           16    64       2.636ms     3.583ms     6.091ms     2.31x    1.36x
+397B/122B TP1    12288+4096           16    64       1.327ms     1.541ms     2.886ms     2.17x    1.16x
+397B/122B TP1    6144+2048            16    64       0.662ms     0.785ms     1.434ms     2.17x    1.19x
+397B/122B TP1    4096+4096            16    64       0.664ms     0.529ms     1.410ms     2.12x    0.80x
+397B/122B TP1    2048+6144            16    64       0.667ms     0.788ms     1.419ms     2.13x    1.18x
+397B/122B TP1    1024+7168            16    64       0.668ms     0.917ms     1.433ms     2.15x    1.37x
+397B/122B TP1    8192x4               16    64       2.672ms     2.081ms     5.852ms     2.19x    0.78x
+397B/122B TP1    4096x8               16    64       2.481ms     2.122ms     5.784ms     2.33x    0.86x
+397B/122B TP1    2048x4               16    64       0.675ms     0.551ms     1.443ms     2.14x    0.82x
+397B/122B TP1    1024x8               16    64       0.630ms     0.588ms     1.450ms     2.30x    0.93x
+
+35B/9B/4B TP1    1x32768              16    32       1.691ms     1.823ms     3.024ms     1.79x    1.08x
+35B/9B/4B TP1    1x16384              16    32       0.880ms     0.975ms     1.482ms     1.68x    1.11x
+35B/9B/4B TP1    1x8192               16    32       0.495ms     0.563ms     0.736ms     1.49x    1.14x
+35B/9B/4B TP1    1x4096               16    32       0.282ms     0.306ms     0.350ms     1.24x    1.09x
+35B/9B/4B TP1    1x2048               16    32       0.163ms     0.173ms     0.158ms     0.97x    1.07x
+35B/9B/4B TP1    28672+4096           16    32       1.669ms     3.549ms     3.024ms     1.81x    2.13x
+35B/9B/4B TP1    24576+8192           16    32       1.688ms     3.065ms     3.762ms     2.23x    1.82x
+35B/9B/4B TP1    16384+16384          16    32       1.636ms     2.204ms     3.194ms     1.95x    1.35x
+35B/9B/4B TP1    8192+24576           16    32       1.674ms     3.064ms     3.079ms     1.84x    1.83x
+35B/9B/4B TP1    4096+28672           16    32       1.672ms     3.575ms     3.121ms     1.87x    2.14x
+35B/9B/4B TP1    12288+4096           16    32       0.863ms     1.548ms     1.478ms     1.71x    1.79x
+35B/9B/4B TP1    6144+2048            16    32       0.484ms     0.777ms     0.730ms     1.51x    1.61x
+35B/9B/4B TP1    4096+4096            16    32       0.331ms     0.524ms     0.726ms     2.20x    1.59x
+35B/9B/4B TP1    2048+6144            16    32       0.485ms     0.781ms     0.742ms     1.53x    1.61x
+35B/9B/4B TP1    1024+7168            16    32       0.484ms     0.910ms     0.755ms     1.56x    1.88x
+35B/9B/4B TP1    8192x4               16    32       1.339ms     1.038ms     3.031ms     2.26x    0.78x
+35B/9B/4B TP1    4096x8               16    32       1.352ms     1.065ms     3.086ms     2.28x    0.79x
+35B/9B/4B TP1    2048x4               16    32       0.344ms     0.278ms     0.750ms     2.18x    0.81x
+35B/9B/4B TP1    1024x8               16    32       0.347ms     0.294ms     0.773ms     2.23x    0.85x
+
+2026-08-27 14:13:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_chunk_local_cumsum_kernel` with `out_idx=None`
+2026-08-27 14:13:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_chunk_local_cumsum_kernel`
+2026-08-27 14:13:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:13:44  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:13:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_get_warmup_chunks_kernel` with `out_idx=None`
+2026-08-27 14:13:46  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_get_warmup_chunks_kernel`
+2026-08-27 14:13:47  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:13:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:13:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_correct_h0_kernel` with `out_idx=None`
+2026-08-27 14:14:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_correct_h0_kernel`
+2026-08-27 14:14:02  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:14:14  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+27B TP2          1x32768               8    24       1.300ms     1.373ms     2.449ms     1.88x    1.06x
+27B TP2          1x16384               8    24       0.670ms     0.719ms     1.206ms     1.80x    1.07x
+27B TP2          1x8192                8    24       0.373ms     0.443ms     0.598ms     1.60x    1.19x
+27B TP2          1x4096                8    24       0.220ms     0.292ms     0.287ms     1.31x    1.33x
+27B TP2          1x2048                8    24       0.125ms     0.167ms     0.140ms     1.13x    1.34x
+27B TP2          28672+4096            8    24       1.295ms     1.398ms     2.410ms     1.86x    1.08x
+27B TP2          24576+8192            8    24       1.737ms     1.376ms     2.902ms     1.67x    0.79x
+27B TP2          16384+16384           8    24       1.600ms     1.646ms     2.165ms     1.35x    1.03x
+27B TP2          8192+24576            8    24       1.290ms     1.378ms     2.334ms     1.81x    1.07x
+27B TP2          4096+28672            8    24       1.290ms     1.385ms     2.414ms     1.87x    1.07x
+27B TP2          12288+4096            8    24       0.667ms     0.714ms     1.143ms     1.71x    1.07x
+27B TP2          6144+2048             8    24       0.367ms     0.435ms     0.560ms     1.53x    1.19x
+27B TP2          4096+4096             8    24       0.369ms     0.430ms     0.523ms     1.42x    1.16x
+27B TP2          2048+6144             8    24       0.372ms     0.436ms     0.567ms     1.52x    1.17x
+27B TP2          1024+7168             8    24       0.373ms     0.441ms     0.590ms     1.58x    1.18x
+2026-08-27 14:15:17  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:15:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+27B TP2          8192x4                8    24       1.226ms     1.033ms     2.384ms     1.94x    0.84x
+27B TP2          4096x8                8    24       1.000ms     1.065ms     2.266ms     2.27x    1.07x
+27B TP2          2048x4                8    24       0.312ms     0.270ms     0.583ms     1.87x    0.87x
+27B TP2          1024x8                8    24       0.256ms     0.289ms     0.562ms     2.19x    1.13x
+
+2026-08-27 14:15:41  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_chunk_local_cumsum_kernel` with `out_idx=None`
+2026-08-27 14:15:43  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_chunk_local_cumsum_kernel`
+2026-08-27 14:15:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:15:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:15:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_get_warmup_chunks_kernel` with `out_idx=None`
+2026-08-27 14:15:54  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_get_warmup_chunks_kernel`
+2026-08-27 14:15:56  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:16:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:16:07  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_correct_h0_kernel` with `out_idx=None`
+2026-08-27 14:16:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_correct_h0_kernel`
+2026-08-27 14:16:11  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:16:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+27B TP1          1x32768              16    48       2.455ms     2.866ms     6.754ms     2.75x    1.17x
+27B TP1          1x16384              16    48       1.786ms     2.311ms     2.138ms     1.20x    1.29x
+27B TP1          1x8192               16    48       0.664ms     0.807ms     1.067ms     1.61x    1.21x
+27B TP1          1x4096               16    48       0.370ms     0.426ms     0.523ms     1.41x    1.15x
+2026-08-27 14:16:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:17:09  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+27B TP1          1x2048               16    48       0.150ms     0.281ms     0.239ms     1.60x    1.88x
+27B TP1          28672+4096           16    48       2.433ms     3.563ms     4.482ms     1.84x    1.46x
+27B TP1          24576+8192           16    48       1.959ms     3.062ms     4.551ms     2.32x    1.56x
+27B TP1          16384+16384          16    48       2.459ms     4.015ms     6.655ms     2.71x    1.63x
+27B TP1          8192+24576           16    48       3.878ms     6.133ms     4.652ms     1.20x    1.58x
+27B TP1          4096+28672           16    48       5.060ms     7.567ms     4.570ms     0.90x    1.50x
+27B TP1          12288+4096           16    48       2.097ms     2.931ms     2.184ms     1.04x    1.40x
+27B TP1          6144+2048            16    48       0.491ms     0.775ms     1.085ms     2.21x    1.58x
+27B TP1          4096+4096            16    48       0.616ms     0.524ms     1.175ms     1.91x    0.85x
+27B TP1          2048+6144            16    48       0.614ms     0.779ms     1.127ms     1.84x    1.27x
+27B TP1          1024+7168            16    48       0.649ms     0.906ms     1.105ms     1.70x    1.40x
+27B TP1          8192x4               16    48       1.987ms     2.088ms     4.568ms     2.30x    1.05x
+27B TP1          4096x8               16    48       1.809ms     1.596ms     4.490ms     2.48x    0.88x
+27B TP1          2048x4               16    48       0.505ms     0.548ms     1.127ms     2.23x    1.08x
+27B TP1          1024x8               16    48       0.465ms     0.440ms     1.127ms     2.42x    0.95x
+
+2026-08-27 14:17:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:18:02  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:18:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:18:13  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:18:15  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:18:27  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+2B/0.8B TP1      1x32768              16    16       0.915ms     1.019ms     3.333ms     3.64x    1.11x
+2B/0.8B TP1      1x16384              16    16       0.809ms     0.579ms     1.021ms     1.26x    0.72x
+2B/0.8B TP1      1x8192               16    16       0.295ms     0.309ms     0.482ms     1.63x    1.05x
+2B/0.8B TP1      1x4096               16    16       0.172ms     0.175ms     0.219ms     1.27x    1.02x
+2B/0.8B TP1      1x2048               16    16       0.102ms     0.149ms     0.117ms     1.14x    1.46x
+2B/0.8B TP1      28672+4096           16    16       0.911ms     1.022ms     1.982ms     2.18x    1.12x
+2B/0.8B TP1      24576+8192           16    16       0.916ms     1.026ms     2.980ms     3.25x    1.12x
+2B/0.8B TP1      16384+16384          16    16       1.081ms     1.683ms     1.658ms     1.53x    1.56x
+2B/0.8B TP1      8192+24576           16    16       0.955ms     1.032ms     2.602ms     2.72x    1.08x
+2B/0.8B TP1      4096+28672           16    16       0.911ms     1.032ms     1.984ms     2.18x    1.13x
+2B/0.8B TP1      12288+4096           16    16       0.515ms     0.577ms     0.921ms     1.79x    1.12x
+2B/0.8B TP1      6144+2048            16    16       0.292ms     0.312ms     0.430ms     1.48x    1.07x
+2B/0.8B TP1      4096+4096            16    16       0.285ms     0.316ms     0.375ms     1.32x    1.11x
+2B/0.8B TP1      2048+6144            16    16       0.290ms     0.316ms     0.431ms     1.49x    1.09x
+2B/0.8B TP1      1024+7168            16    16       0.293ms     0.313ms     0.460ms     1.57x    1.07x
+2026-08-27 14:19:28  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:19:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+2B/0.8B TP1      8192x4               16    16       0.658ms     1.028ms     1.647ms     2.50x    1.56x
+2B/0.8B TP1      4096x8               16    16       0.682ms     0.533ms     2.159ms     3.17x    0.78x
+2B/0.8B TP1      2048x4               16    16       0.166ms     0.267ms     0.379ms     2.28x    1.61x
+2B/0.8B TP1      1024x8               16    16       0.172ms     0.149ms     0.389ms     2.26x    0.87x
+
+2026-08-27 14:19:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_kkt_solve_kernel` with `out_idx=None`
+2026-08-27 14:19:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_kkt_solve_kernel`
+2026-08-27 14:19:56  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_prepare_h_kernel` with `out_idx=None`
+2026-08-27 14:20:07  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_prepare_h_kernel`
+2026-08-27 14:20:09  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:20:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+Sym h32          1x32768              32    32       1.704ms     1.908ms     3.306ms     1.94x    1.12x
+Sym h32          1x16384              32    32       0.896ms     1.022ms     1.641ms     1.83x    1.14x
+Sym h32          1x8192               32    32       0.506ms     0.580ms     0.812ms     1.61x    1.15x
+Sym h32          1x4096               32    32       0.289ms     0.313ms     0.376ms     1.30x    1.08x
+Sym h32          1x2048               32    32       0.348ms     0.175ms     0.163ms     0.47x    0.50x
+Sym h32          28672+4096           32    32       1.693ms     3.547ms     3.314ms     1.96x    2.10x
+Sym h32          24576+8192           32    32       1.692ms     3.044ms     3.315ms     1.96x    1.80x
+2026-08-27 14:21:02  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:131): TileLang begins to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel` with `out_idx=None`
+2026-08-27 14:21:14  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:139): TileLang completes to compile kernel `tilelang_fused_chunk_gdr_fwd_kernel`
+Sym h32          16384+16384          32    32       1.334ms     2.053ms     3.368ms     2.52x    1.54x
+Sym h32          8192+24576           32    32       2.696ms     3.051ms     3.354ms     1.24x    1.13x
+Sym h32          4096+28672           32    32       1.693ms     3.559ms     3.377ms     1.99x    2.10x
+Sym h32          12288+4096           32    32       0.878ms     1.542ms     1.643ms     1.87x    1.76x
+Sym h32          6144+2048            32    32       0.492ms     0.778ms     0.812ms     1.65x    1.58x
+Sym h32          4096+4096            32    32       0.332ms     0.523ms     0.811ms     2.44x    1.58x
+Sym h32          2048+6144            32    32       0.495ms     0.778ms     0.819ms     1.65x    1.57x
+Sym h32          1024+7168            32    32       0.495ms     0.906ms     0.821ms     1.66x    1.83x
+Sym h32          8192x4               32    32       1.364ms     1.041ms     3.337ms     2.45x    0.76x
+Sym h32          4096x8               32    32       1.376ms     1.073ms     3.379ms     2.46x    0.78x
+Sym h32          2048x4               32    32       0.341ms     0.278ms     0.826ms     2.42x    0.81x
+Sym h32          1024x8               32    32       0.350ms     0.302ms     0.855ms     2.44x    0.86x
+
+==============================================================================================================
+
+>>> BACKWARD BENCHMARKS
+Model Config   SeqLen       h_qk  h_v #seq    flash_qla [bwd]   FLA [bwd]    Speedup
+------------------------------------------------------------------------------------
+hk16_hv32      8k_1seq        16   32    1       1.693ms     2.227ms     1.32x 
+hk16_hv32      8k_2seq        16   32    2       1.690ms     2.160ms     1.28x 
+hk16_hv32      8k_4seq        16   32    4       1.826ms     2.096ms     1.15x 
+hk16_hv32      8k_8seq        16   32    8       1.892ms     1.973ms     1.04x 
+hk16_hv32      32k_1seq       16   32    1       6.231ms     9.389ms     1.51x 
+hk16_hv32      32k_2seq       16   32    2       6.197ms     9.032ms     1.46x 
+hk16_hv32      32k_4seq       16   32    4       6.167ms     8.799ms     1.43x 
+hk16_hv32      32k_8seq       16   32    8       6.147ms     8.452ms     1.38x 
+
+hk8_hv16       8k_1seq         8   16    1       0.877ms     1.467ms     1.67x 
+hk8_hv16       8k_2seq         8   16    2       0.870ms     1.376ms     1.58x 
+hk8_hv16       8k_4seq         8   16    4       0.939ms     1.269ms     1.35x 
+hk8_hv16       8k_8seq         8   16    8       0.972ms     1.076ms     1.11x 
+hk8_hv16       32k_1seq        8   16    1       3.144ms     6.211ms     1.98x 
+hk8_hv16       32k_2seq        8   16    2       3.109ms     5.532ms     1.78x 
+hk8_hv16       32k_4seq        8   16    4       3.198ms     4.563ms     1.43x 
+hk8_hv16       32k_8seq        8   16    8       3.137ms     4.481ms     1.43x 
+
+hk4_hv8        8k_1seq         4    8    1       0.544ms     0.984ms     1.81x 
+hk4_hv8        8k_2seq         4    8    2       0.536ms     0.894ms     1.67x 
+hk4_hv8        8k_4seq         4    8    4       0.536ms     0.796ms     1.48x 
+hk4_hv8        8k_8seq         4    8    8       0.526ms     0.595ms     1.13x 
+hk4_hv8        32k_1seq        4    8    1       1.850ms     4.553ms     2.46x 
+hk4_hv8        32k_2seq        4    8    2       1.820ms     3.922ms     2.16x 
+hk4_hv8        32k_4seq        4    8    4       1.765ms     2.807ms     1.59x 
+hk4_hv8        32k_8seq        4    8    8       1.767ms     2.593ms     1.47x 
+
+hk2_hv4        8k_1seq         2    4    1       0.833ms     0.885ms     1.06x 
+hk2_hv4        8k_2seq         2    4    2       0.495ms     1.399ms     2.83x 
+hk2_hv4        8k_4seq         2    4    4       0.751ms     1.076ms     1.43x 
+hk2_hv4        8k_8seq         2    4    8       0.312ms     0.455ms     1.46x 
+hk2_hv4        32k_1seq        2    4    1       1.324ms     6.988ms     5.28x 
+hk2_hv4        32k_2seq        2    4    2       0.976ms     4.958ms     5.08x 
+hk2_hv4        32k_4seq        2    4    4       1.122ms     3.397ms     3.03x 
+hk2_hv4        32k_8seq        2    4    8       0.930ms     1.660ms     1.78x 
+
+Benchmark Finished.
+GPU: NVIDIA GeForce RTX 5090
+Models: Qwen3.5 family (397B, 122B, 35B, 27B, 9B, 4B, 2B, 0.8B), d=128
+Config: Warmup=10, Repeats=100, Backend=cudagraph
+Library Versions:
+  torch: 2.12.1+cu130 | fla: 0.5.2 | flashinfer: 0.6.17 | tilelang: 0.1.13
+==============================================================================================================
+
+>>> FORWARD BENCHMARKS
+Model Config     Seqlens            h_qk   h_v    flash_qla [fwd]    FI [fwd]   FLA [fwd]    vs FLA    vs FI
+------------------------------------------------------------------------------------------------------------
+397B/122B TP8    1x32768               2     8       0.549ms     0.565ms     1.382ms     2.52x    1.03x
+397B/122B TP8    1x16384               2     8       0.307ms     0.314ms     0.671ms     2.19x    1.02x
+397B/122B TP8    1x8192                2     8       0.193ms     0.188ms     0.326ms     1.69x    0.98x
+397B/122B TP8    1x4096                2     8       0.112ms     0.157ms     0.174ms     1.56x    1.41x
+397B/122B TP8    1x2048                2     8       0.079ms     0.098ms     0.099ms     1.25x    1.25x
+397B/122B TP8    28672+4096            2     8       0.540ms     0.571ms     1.266ms     2.34x    1.06x
+397B/122B TP8    24576+8192            2     8       0.529ms     0.566ms     1.153ms     2.18x    1.07x
+397B/122B TP8    16384+16384           2     8       0.505ms     0.571ms     0.919ms     1.82x    1.13x
+397B/122B TP8    8192+24576            2     8       0.529ms     0.571ms     1.155ms     2.18x    1.08x
+397B/122B TP8    4096+28672            2     8       0.540ms     0.574ms     1.271ms     2.35x    1.06x
+397B/122B TP8    12288+4096            2     8       0.297ms     0.315ms     0.557ms     1.87x    1.06x
+397B/122B TP8    6144+2048             2     8       0.182ms     0.188ms     0.269ms     1.48x    1.03x
+397B/122B TP8    4096+4096             2     8       0.170ms     0.193ms     0.209ms     1.23x    1.14x
+397B/122B TP8    2048+6144             2     8       0.181ms     0.192ms     0.269ms     1.49x    1.06x
+397B/122B TP8    1024+7168             2     8       0.187ms     0.195ms     0.298ms     1.60x    1.04x
+397B/122B TP8    8192x4                2     8       0.481ms     0.574ms     0.708ms     1.47x    1.19x
+397B/122B TP8    4096x8                2     8       0.320ms     0.515ms     0.701ms     2.19x    1.61x
+397B/122B TP8    2048x4                2     8       0.159ms     0.190ms     0.152ms     0.96x    1.20x
+397B/122B TP8    1024x8                2     8       0.083ms     0.134ms     0.133ms     1.60x    1.60x
+
+397B/122B TP4    1x32768               4    16       0.888ms     0.947ms     1.864ms     2.10x    1.07x
+397B/122B TP4    1x16384               4    16       0.510ms     0.550ms     0.929ms     1.82x    1.08x
+397B/122B TP4    1x8192                4    16       0.287ms     0.298ms     0.450ms     1.57x    1.04x
+397B/122B TP4    1x4096                4    16       0.172ms     0.169ms     0.214ms     1.24x    0.99x
+397B/122B TP4    1x2048                4    16       0.102ms     0.148ms     0.116ms     1.13x    1.45x
+397B/122B TP4    28672+4096            4    16       0.880ms     0.952ms     1.786ms     2.03x    1.08x
+397B/122B TP4    24576+8192            4    16       0.876ms     0.953ms     1.665ms     1.90x    1.09x
+397B/122B TP4    16384+16384           4    16       0.864ms     0.954ms     1.430ms     1.65x    1.10x
+397B/122B TP4    8192+24576            4    16       0.875ms     0.955ms     1.669ms     1.91x    1.09x
+397B/122B TP4    4096+28672            4    16       0.881ms     0.958ms     1.792ms     2.03x    1.09x
+397B/122B TP4    12288+4096            4    16       0.499ms     0.553ms     0.829ms     1.66x    1.11x
+397B/122B TP4    6144+2048             4    16       0.283ms     0.300ms     0.400ms     1.41x    1.06x
+397B/122B TP4    4096+4096             4    16       0.276ms     0.303ms     0.341ms     1.23x    1.10x
+397B/122B TP4    2048+6144             4    16       0.282ms     0.304ms     0.400ms     1.41x    1.08x
+397B/122B TP4    1024+7168             4    16       0.285ms     0.302ms     0.430ms     1.51x    1.06x
+397B/122B TP4    8192x4                4    16       0.646ms     1.026ms     1.402ms     2.17x    1.59x
+397B/122B TP4    4096x8                4    16       0.658ms     0.527ms     1.421ms     2.16x    0.80x
+397B/122B TP4    2048x4                4    16       0.160ms     0.261ms     0.333ms     2.08x    1.63x
+397B/122B TP4    1024x8                4    16       0.168ms     0.140ms     0.342ms     2.04x    0.84x
+
+397B/122B TP2    1x32768               8    32       1.664ms     1.768ms     2.895ms     1.74x    1.06x
+397B/122B TP2    1x16384               8    32       0.870ms     0.960ms     1.422ms     1.63x    1.10x
+397B/122B TP2    1x8192                8    32       0.493ms     0.557ms     0.714ms     1.45x    1.13x
+397B/122B TP2    1x4096                8    32       0.279ms     0.303ms     0.342ms     1.22x    1.08x
+397B/122B TP2    1x2048                8    32       0.162ms     0.173ms     0.158ms     0.97x    1.07x
+397B/122B TP2    28672+4096            8    32       1.653ms     3.546ms     2.893ms     1.75x    2.15x
+397B/122B TP2    24576+8192            8    32       1.650ms     3.043ms     2.872ms     1.74x    1.84x
+397B/122B TP2    16384+16384           8    32       1.301ms     2.043ms     2.822ms     2.17x    1.57x
+397B/122B TP2    8192+24576            8    32       1.656ms     3.050ms     2.935ms     1.77x    1.84x
+397B/122B TP2    4096+28672            8    32       1.655ms     3.558ms     2.981ms     1.80x    2.15x
+397B/122B TP2    12288+4096            8    32       0.852ms     1.542ms     1.411ms     1.66x    1.81x
+397B/122B TP2    6144+2048             8    32       0.480ms     0.776ms     0.705ms     1.47x    1.62x
+397B/122B TP2    4096+4096             8    32       0.328ms     0.524ms     0.695ms     2.12x    1.60x
+397B/122B TP2    2048+6144             8    32       0.481ms     0.778ms     0.717ms     1.49x    1.62x
+397B/122B TP2    1024+7168             8    32       0.481ms     0.906ms     0.732ms     1.52x    1.88x
+397B/122B TP2    8192x4                8    32       1.330ms     1.036ms     2.878ms     2.16x    0.78x
+397B/122B TP2    4096x8                8    32       1.346ms     1.061ms     2.921ms     2.17x    0.79x
+397B/122B TP2    2048x4                8    32       0.336ms     0.274ms     0.710ms     2.11x    0.82x
+397B/122B TP2    1024x8                8    32       0.339ms     0.291ms     0.740ms     2.18x    0.86x
+
+397B/122B TP1    1x32768              16    64       2.612ms     4.108ms     5.707ms     2.19x    1.57x
+397B/122B TP1    1x16384              16    64       1.307ms     2.042ms     2.794ms     2.14x    1.56x
+397B/122B TP1    1x8192               16    64       0.654ms     1.037ms     1.382ms     2.11x    1.58x
+397B/122B TP1    1x4096               16    64       0.327ms     0.524ms     0.691ms     2.11x    1.60x
+397B/122B TP1    1x2048               16    64       0.162ms     0.264ms     0.324ms     2.00x    1.63x
+397B/122B TP1    28672+4096           16    64       2.435ms     3.598ms     5.827ms     2.39x    1.48x
+397B/122B TP1    24576+8192           16    64       2.657ms     3.089ms     5.881ms     2.21x    1.16x
+397B/122B TP1    16384+16384          16    64       2.652ms     2.070ms     5.813ms     2.19x    0.78x
+397B/122B TP1    8192+24576           16    64       2.655ms     3.101ms     6.022ms     2.27x    1.17x
+397B/122B TP1    4096+28672           16    64       2.657ms     3.616ms     6.099ms     2.30x    1.36x
+397B/122B TP1    12288+4096           16    64       1.333ms     1.541ms     2.885ms     2.16x    1.16x
+397B/122B TP1    6144+2048            16    64       0.665ms     0.786ms     1.434ms     2.16x    1.18x
+397B/122B TP1    4096+4096            16    64       0.669ms     0.530ms     1.410ms     2.11x    0.79x
+397B/122B TP1    2048+6144            16    64       0.671ms     0.788ms     1.417ms     2.11x    1.17x
+397B/122B TP1    1024+7168            16    64       0.671ms     0.917ms     1.435ms     2.14x    1.37x
+397B/122B TP1    8192x4               16    64       2.679ms     2.096ms     5.865ms     2.19x    0.78x
+397B/122B TP1    4096x8               16    64       2.495ms     2.132ms     5.787ms     2.32x    0.85x
+397B/122B TP1    2048x4               16    64       0.678ms     0.551ms     1.443ms     2.13x    0.81x
+397B/122B TP1    1024x8               16    64       0.634ms     0.588ms     1.459ms     2.30x    0.93x
+
+35B/9B/4B TP1    1x32768              16    32       1.696ms     1.832ms     3.033ms     1.79x    1.08x
+35B/9B/4B TP1    1x16384              16    32       0.887ms     0.986ms     1.486ms     1.67x    1.11x
+35B/9B/4B TP1    1x8192               16    32       0.498ms     0.563ms     0.739ms     1.48x    1.13x
+35B/9B/4B TP1    1x4096               16    32       0.281ms     0.306ms     0.350ms     1.24x    1.09x
+35B/9B/4B TP1    1x2048               16    32       0.163ms     0.174ms     0.159ms     0.98x    1.07x
+35B/9B/4B TP1    28672+4096           16    32       1.684ms     3.560ms     3.027ms     1.80x    2.11x
+35B/9B/4B TP1    24576+8192           16    32       1.679ms     3.054ms     3.024ms     1.80x    1.82x
+35B/9B/4B TP1    16384+16384          16    32       1.323ms     2.044ms     2.990ms     2.26x    1.55x
+35B/9B/4B TP1    8192+24576           16    32       1.683ms     3.065ms     3.082ms     1.83x    1.82x
+35B/9B/4B TP1    4096+28672           16    32       1.681ms     3.575ms     3.122ms     1.86x    2.13x
+35B/9B/4B TP1    12288+4096           16    32       0.869ms     1.548ms     1.477ms     1.70x    1.78x
+35B/9B/4B TP1    6144+2048            16    32       0.486ms     0.778ms     0.732ms     1.51x    1.60x
+35B/9B/4B TP1    4096+4096            16    32       0.332ms     0.524ms     0.727ms     2.19x    1.58x
+35B/9B/4B TP1    2048+6144            16    32       0.486ms     0.781ms     0.743ms     1.53x    1.61x
+35B/9B/4B TP1    1024+7168            16    32       0.486ms     0.908ms     0.753ms     1.55x    1.87x
+35B/9B/4B TP1    8192x4               16    32       1.342ms     1.039ms     3.030ms     2.26x    0.77x
+35B/9B/4B TP1    4096x8               16    32       1.354ms     1.066ms     3.085ms     2.28x    0.79x
+35B/9B/4B TP1    2048x4               16    32       0.341ms     0.275ms     0.742ms     2.18x    0.81x
+35B/9B/4B TP1    1024x8               16    32       0.343ms     0.295ms     0.772ms     2.25x    0.86x
+
+27B TP2          1x32768               8    24       1.319ms     1.397ms     2.452ms     1.86x    1.06x
+27B TP2          1x16384               8    24       0.677ms     0.729ms     1.210ms     1.79x    1.08x
+27B TP2          1x8192                8    24       0.377ms     0.445ms     0.600ms     1.59x    1.18x
+27B TP2          1x4096                8    24       0.221ms     0.293ms     0.290ms     1.31x    1.33x
+27B TP2          1x2048                8    24       0.125ms     0.168ms     0.142ms     1.13x    1.34x
+27B TP2          28672+4096            8    24       1.301ms     1.395ms     2.398ms     1.84x    1.07x
+27B TP2          24576+8192            8    24       1.297ms     1.388ms     2.325ms     1.79x    1.07x
+27B TP2          16384+16384           8    24       1.299ms     1.389ms     2.171ms     1.67x    1.07x
+27B TP2          8192+24576            8    24       1.299ms     1.390ms     2.336ms     1.80x    1.07x
+27B TP2          4096+28672            8    24       1.306ms     1.398ms     2.416ms     1.85x    1.07x
+27B TP2          12288+4096            8    24       0.671ms     0.720ms     1.145ms     1.71x    1.07x
+27B TP2          6144+2048             8    24       0.369ms     0.436ms     0.563ms     1.53x    1.18x
+27B TP2          4096+4096             8    24       0.366ms     0.428ms     0.524ms     1.43x    1.17x
+27B TP2          2048+6144             8    24       0.369ms     0.436ms     0.569ms     1.54x    1.18x
+27B TP2          1024+7168             8    24       0.373ms     0.441ms     0.590ms     1.58x    1.18x
+27B TP2          8192x4                8    24       1.233ms     1.037ms     2.387ms     1.94x    0.84x
+27B TP2          4096x8                8    24       1.008ms     1.066ms     2.266ms     2.25x    1.06x
+27B TP2          2048x4                8    24       0.312ms     0.270ms     0.586ms     1.88x    0.87x
+27B TP2          1024x8                8    24       0.258ms     0.288ms     0.566ms     2.19x    1.12x
+
+27B TP1          1x32768              16    48       2.485ms     2.914ms     4.370ms     1.76x    1.17x
+27B TP1          1x16384              16    48       1.302ms     1.476ms     2.149ms     1.65x    1.13x
+27B TP1          1x8192               16    48       0.671ms     0.810ms     1.069ms     1.59x    1.21x
+27B TP1          1x4096               16    48       0.372ms     0.428ms     0.525ms     1.41x    1.15x
+27B TP1          1x2048               16    48       0.150ms     0.282ms     0.243ms     1.62x    1.87x
+27B TP1          28672+4096           16    48       2.459ms     3.589ms     4.484ms     1.82x    1.46x
+27B TP1          24576+8192           16    48       1.995ms     3.080ms     4.515ms     2.26x    1.54x
+27B TP1          16384+16384          16    48       2.470ms     2.064ms     4.820ms     1.95x    0.84x
+27B TP1          8192+24576           16    48       2.455ms     3.093ms     4.611ms     1.88x    1.26x
+27B TP1          4096+28672           16    48       2.458ms     3.607ms     4.554ms     1.85x    1.47x
+27B TP1          12288+4096           16    48       0.996ms     1.547ms     2.191ms     2.20x    1.55x
+27B TP1          6144+2048            16    48       0.498ms     0.778ms     1.089ms     2.19x    1.56x
+27B TP1          4096+4096            16    48       0.620ms     0.525ms     1.179ms     1.90x    0.85x
+27B TP1          2048+6144            16    48       0.616ms     0.782ms     1.131ms     1.83x    1.27x
+27B TP1          1024+7168            16    48       0.652ms     0.910ms     1.111ms     1.70x    1.40x
+27B TP1          8192x4               16    48       1.999ms     2.098ms     4.576ms     2.29x    1.05x
+27B TP1          4096x8               16    48       1.828ms     1.602ms     4.498ms     2.46x    0.88x
+27B TP1          2048x4               16    48       0.509ms     0.548ms     1.130ms     2.22x    1.08x
+27B TP1          1024x8               16    48       0.470ms     0.441ms     1.131ms     2.41x    0.94x
+
+2B/0.8B TP1      1x32768              16    16       0.921ms     1.037ms     2.067ms     2.24x    1.13x
+2B/0.8B TP1      1x16384              16    16       0.529ms     0.576ms     1.026ms     1.94x    1.09x
+2B/0.8B TP1      1x8192               16    16       0.296ms     0.310ms     0.485ms     1.64x    1.04x
+2B/0.8B TP1      1x4096               16    16       0.173ms     0.175ms     0.220ms     1.27x    1.01x
+2B/0.8B TP1      1x2048               16    16       0.103ms     0.150ms     0.118ms     1.14x    1.46x
+2B/0.8B TP1      28672+4096           16    16       0.913ms     1.036ms     1.985ms     2.17x    1.13x
+2B/0.8B TP1      24576+8192           16    16       0.907ms     1.038ms     1.872ms     2.06x    1.14x
+2B/0.8B TP1      16384+16384          16    16       0.897ms     1.039ms     1.654ms     1.84x    1.16x
+2B/0.8B TP1      8192+24576           16    16       0.910ms     1.039ms     1.873ms     2.06x    1.14x
+2B/0.8B TP1      4096+28672           16    16       0.915ms     1.041ms     1.987ms     2.17x    1.14x
+2B/0.8B TP1      12288+4096           16    16       0.516ms     0.578ms     0.923ms     1.79x    1.12x
+2B/0.8B TP1      6144+2048            16    16       0.291ms     0.312ms     0.431ms     1.48x    1.07x
+2B/0.8B TP1      4096+4096            16    16       0.284ms     0.316ms     0.376ms     1.32x    1.11x
+2B/0.8B TP1      2048+6144            16    16       0.291ms     0.315ms     0.431ms     1.48x    1.08x
+2B/0.8B TP1      1024+7168            16    16       0.294ms     0.312ms     0.461ms     1.57x    1.06x
+2B/0.8B TP1      8192x4               16    16       0.670ms     1.031ms     1.643ms     2.45x    1.54x
+2B/0.8B TP1      4096x8               16    16       0.683ms     0.534ms     1.662ms     2.43x    0.78x
+2B/0.8B TP1      2048x4               16    16       0.169ms     0.268ms     0.374ms     2.22x    1.59x
+2B/0.8B TP1      1024x8               16    16       0.175ms     0.150ms     0.391ms     2.24x    0.86x
+
+Sym h32          1x32768              32    32       1.734ms     1.941ms     3.312ms     1.91x    1.12x
+Sym h32          1x16384              32    32       0.902ms     1.036ms     1.642ms     1.82x    1.15x
+Sym h32          1x8192               32    32       0.511ms     0.582ms     0.812ms     1.59x    1.14x
+Sym h32          1x4096               32    32       0.287ms     0.315ms     0.379ms     1.32x    1.10x
+Sym h32          1x2048               32    32       0.163ms     0.177ms     0.163ms     1.00x    1.08x
+Sym h32          28672+4096           32    32       1.715ms     3.559ms     3.318ms     1.93x    2.07x
+Sym h32          24576+8192           32    32       1.712ms     3.054ms     3.317ms     1.94x    1.78x
+Sym h32          16384+16384          32    32       1.357ms     2.045ms     3.316ms     2.44x    1.51x
+Sym h32          8192+24576           32    32       1.716ms     3.065ms     3.359ms     1.96x    1.79x
+Sym h32          4096+28672           32    32       1.715ms     3.574ms     3.383ms     1.97x    2.08x
+Sym h32          12288+4096           32    32       0.883ms     1.546ms     1.645ms     1.86x    1.75x
+Sym h32          6144+2048            32    32       0.498ms     0.774ms     0.814ms     1.63x    1.55x
+Sym h32          4096+4096            32    32       0.335ms     0.521ms     0.812ms     2.42x    1.55x
+Sym h32          2048+6144            32    32       0.498ms     0.776ms     0.819ms     1.65x    1.56x
+Sym h32          1024+7168            32    32       0.500ms     0.904ms     0.823ms     1.65x    1.81x
+Sym h32          8192x4               32    32       1.377ms     1.050ms     3.338ms     2.42x    0.76x
+Sym h32          4096x8               32    32       1.384ms     1.075ms     3.375ms     2.44x    0.78x
+Sym h32          2048x4               32    32       0.346ms     0.278ms     0.824ms     2.38x    0.80x
+Sym h32          1024x8               32    32       0.351ms     0.302ms     0.854ms     2.44x    0.86x
+
+==============================================================================================================
+
+>>> BACKWARD BENCHMARKS
+Model Config   SeqLen       h_qk  h_v #seq    flash_qla [bwd]   FLA [bwd]    Speedup
+------------------------------------------------------------------------------------
+hk16_hv32      8k_1seq        16   32    1       1.551ms     2.229ms     1.44x 
+hk16_hv32      8k_2seq        16   32    2       1.545ms     2.166ms     1.40x 
+hk16_hv32      8k_4seq        16   32    4       1.676ms     2.101ms     1.25x 
+hk16_hv32      8k_8seq        16   32    8       1.635ms     1.977ms     1.21x 
+hk16_hv32      32k_1seq       16   32    1       5.754ms     9.393ms     1.63x 
+hk16_hv32      32k_2seq       16   32    2       5.755ms     9.026ms     1.57x 
+hk16_hv32      32k_4seq       16   32    4       5.745ms     8.821ms     1.54x 
+hk16_hv32      32k_8seq       16   32    8       5.724ms     8.464ms     1.48x 
+
+hk8_hv16       8k_1seq         8   16    1       0.825ms     1.471ms     1.78x 
+hk8_hv16       8k_2seq         8   16    2       0.799ms     1.376ms     1.72x 
+hk8_hv16       8k_4seq         8   16    4       0.871ms     1.269ms     1.46x 
+hk8_hv16       8k_8seq         8   16    8       0.912ms     1.076ms     1.18x 
+hk8_hv16       32k_1seq        8   16    1       2.907ms     6.217ms     2.14x 
+hk8_hv16       32k_2seq        8   16    2       2.910ms     5.537ms     1.90x 
+hk8_hv16       32k_4seq        8   16    4       2.993ms     4.576ms     1.53x 
+hk8_hv16       32k_8seq        8   16    8       2.929ms     4.487ms     1.53x 
+
+hk4_hv8        8k_1seq         4    8    1       0.508ms     0.990ms     1.95x 
+hk4_hv8        8k_2seq         4    8    2       0.508ms     0.903ms     1.78x 
+hk4_hv8        8k_4seq         4    8    4       0.494ms     0.804ms     1.63x 
+hk4_hv8        8k_8seq         4    8    8       0.496ms     0.596ms     1.20x 
+hk4_hv8        32k_1seq        4    8    1       1.722ms     4.566ms     2.65x 
+hk4_hv8        32k_2seq        4    8    2       1.692ms     3.928ms     2.32x 
+hk4_hv8        32k_4seq        4    8    4       1.643ms     2.807ms     1.71x 
+hk4_hv8        32k_8seq        4    8    8       1.640ms     2.544ms     1.55x 
+
+hk2_hv4        8k_1seq         2    4    1       0.362ms     0.781ms     2.16x 
+hk2_hv4        8k_2seq         2    4    2       0.341ms     0.696ms     2.04x 
+hk2_hv4        8k_4seq         2    4    4       0.322ms     0.598ms     1.86x 
+hk2_hv4        8k_8seq         2    4    8       0.287ms     0.400ms     1.40x 
+hk2_hv4        32k_1seq        2    4    1       0.956ms     3.721ms     3.89x 
+hk2_hv4        32k_2seq        2    4    2       0.919ms     3.084ms     3.36x 
+hk2_hv4        32k_4seq        2    4    4       0.870ms     1.985ms     2.28x 
+hk2_hv4        32k_8seq        2    4    8       0.872ms     1.661ms     1.91x 
+
+Benchmark Finished.
