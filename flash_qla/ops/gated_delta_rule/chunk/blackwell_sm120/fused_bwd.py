@@ -9,6 +9,48 @@ import tilelang.language as T
 from flash_qla.utils import prepare_chunk_offsets
 
 
+@tilelang.jit
+def tilelang_zero_bwd_padding(
+    H,
+    DK,
+    DV,
+    qkva_dtype,
+    g_dtype,
+    b_dtype,
+    seqlen_dtype,
+):
+    num_tokens = T.dynamic("num_tokens")
+    real_batch_size = T.dynamic("real_batch_size")
+
+    @T.prim_func
+    def tilelang_zero_bwd_padding_kernel(
+        cu_seqlens: T.Tensor([real_batch_size + 1], dtype=seqlen_dtype),
+        dq: T.Tensor([1, num_tokens, H, DK], dtype=qkva_dtype),
+        dk: T.Tensor([1, num_tokens, H, DK], dtype=qkva_dtype),
+        dv: T.Tensor([1, num_tokens, H, DV], dtype=qkva_dtype),
+        dg: T.Tensor([1, num_tokens, H], dtype=g_dtype),
+        db: T.Tensor([1, num_tokens, H], dtype=b_dtype),
+    ):
+        # One CTA per value head keeps the no-padding path cheap: it performs
+        # only the dynamic end lookup and exits.  Padding is uncommon and is
+        # generally short, so serializing tokens while vectorizing the 128-D
+        # row avoids zeroing every valid output before the main kernel.
+        with T.Kernel(H, threads=128) as (bh,):
+            seq_end_idx = T.alloc_var("int32")
+            seq_end_idx = cu_seqlens[real_batch_size]
+            for i in T.serial(num_tokens - seq_end_idx):
+                for j in T.Parallel(DK):
+                    dq[0, seq_end_idx + i, bh, j] = 0
+                    dk[0, seq_end_idx + i, bh, j] = 0
+                for j in T.Parallel(DV):
+                    dv[0, seq_end_idx + i, bh, j] = 0
+                if T.get_thread_binding() == 0:
+                    dg[0, seq_end_idx + i, bh] = 0
+                    db[0, seq_end_idx + i, bh] = 0
+
+    return tilelang_zero_bwd_padding_kernel
+
+
 @tilelang.jit(
     # out_idx=[-5, -4, -3, -2, -1],
     pass_configs={
@@ -70,12 +112,6 @@ def tilelang_fused_chunk_gdr_bwd(
         if state_v_first
         else (batch_size, H, DK, DV)
     )
-    # dh_tmp is double-buffered: K reads the previous dS0 from slot (i_s + 1) % 2 while S writes slot i_s % 2.
-    dh_tmp_shape = (
-        (batch_size, H, 2, DV, DK)
-        if state_v_first
-        else (batch_size, H, 2, DK, DV)
-    )
     ht_shape = (
         (batch_size, H, DV, DK)
         if state_v_first
@@ -93,7 +129,6 @@ def tilelang_fused_chunk_gdr_bwd(
         g: T.Tensor(g_shape, dtype=g_dtype),
         b: T.Tensor(b_shape, dtype=b_dtype),
         h: T.Tensor(h_shape, dtype=h_dtype),
-        dh_tmp: T.Tensor(dh_tmp_shape, dtype=qkva_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         chunk_offsets: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         dq: T.Tensor(v_shape, dtype=qkva_dtype),
@@ -164,6 +199,10 @@ def tilelang_fused_chunk_gdr_bwd(
             odot_fragment_1 = T.alloc_fragment((block_S, DK), dtype=accum_dtype)
             dg_fragment_1 = T.alloc_fragment((block_S), dtype=accum_dtype)
             dg_last_local_1 = T.alloc_fragment((1), dtype=accum_dtype)
+            dh_left_fragment = T.alloc_fragment(
+                (DV, DK // 2) if state_v_first else (DK // 2, DV),
+                dtype=qkva_dtype,
+            )
 
             # CONSUMER_A
             mask_fragment = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
@@ -222,11 +261,14 @@ def tilelang_fused_chunk_gdr_bwd(
             bar_k_left_ready = T.alloc_barrier(arrive_count=128)   # K-07 loads the left half before producing the left half of dK.
             # K-07 write-after-read synchronization for dk_frag -> dqkv_shared in the dg dot product.
             # bar_s4_merge = T.alloc_barrier(arrive_count=128)
-            # S-15 publishes dh_tmp slot i_s % 2; K-01 waits before reading the
-            # previous value from slot (i_s + 1) % 2 during iteration i_s.
-            # Arrival order: initial slot 0 -> S-15(0) slot 0 -> S-15(1) slot 1 -> ...
-            # Wait order: K-01(0) slot 0 -> K-01(1) slot 1 -> K-01(2) slot 0 -> ...
+            # S publishes the left half of dSt through tmp_shared_4_1; K waits,
+            # retains it in registers, and then allows S to overwrite the same
+            # tile with the right half.
             bar_dhtmp_ready = T.alloc_barrier(arrive_count=128)
+            # After K retains the published left half in registers, S reuses
+            # the same shared tile to publish the right half.  This replaces
+            # the remaining intra-CTA HBM handoff.
+            bar_dh_right_ready = T.alloc_barrier(arrive_count=128)
             # A-10 write-after-read synchronization for the dg dot product staged through dqkv_shared.
             bar_s4_dot_a = T.alloc_barrier(arrive_count=128)
             # dg_shared is updated through scatter stores whose producer
@@ -283,8 +325,8 @@ def tilelang_fused_chunk_gdr_bwd(
             tx = T.get_thread_binding()
 
             PRODUCER_NREG = 24
-            CONSUMER_K_NREG = 144
-            CONSUMER_A_NREG = 184
+            CONSUMER_K_NREG = 168
+            CONSUMER_A_NREG = 160
             CONSUMER_S_NREG = 160
 
             # Prefetch the last chunk of data
@@ -366,31 +408,10 @@ def tilelang_fused_chunk_gdr_bwd(
                 else:
                     T.clear(dh_fragment_0)
                     T.clear(dh_fragment_1)
-                # Store initial dS0 in both slots: K-01(0)/K-07(1) read slot 0, and K-07(0) reads slot 1.
-                for slot in T.serial(2):
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            dh_tmp[bb, bh, slot, j_v, j_k] = T.Cast(qkva_dtype, dh_fragment_0[j_v, j_k])
-                            dh_tmp[bb, bh, slot, j_v, DK // 2 + j_k] = T.Cast(qkva_dtype, dh_fragment_1[j_v, j_k])
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            dh_tmp[bb, bh, slot, j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_0[j_k, j_v])
-                            dh_tmp[bb, bh, slot, DK // 2 + j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_1[j_k, j_v])
-                # K reloads the right half of the initial state from dh_tmp.
-                # Publish those global writes before the readiness barrier;
-                # without this fence the first (last-in-sequence) chunk can
-                # observe stale allocator contents under high CTA occupancy.
-                T.evaluate(T.call_extern("handle", "__threadfence_block"))
-                # Prefetch the left half from dh_tmp slot 0 into tmp_shared_4_1.
-                if state_v_first:
-                    T.copy(dh_tmp[bb, bh, 0, 0:DV, 0:DK//2], tmp_shared_4_1)
-                else:
-                    T.copy(dh_tmp[bb, bh, 0, 0:DK//2, 0:DV], tmp_shared_4_1)
-                # The following K warpgroup consumes tmp_shared_4_1 through
-                # WGMMA.  Make the generic shared-memory writes visible to
-                # the async proxy before publishing readiness via the mbarrier.
-                T.fence_proxy_async()
-                # Publish the initial dh_tmp (dht or zero) for K-01's first reload.
+                # K materializes iteration zero directly from the FP32 dht.
+                # Subsequent iterations consume the shared state published by
+                # S in the preceding iteration.
+                # Publish readiness for the direct iteration-zero path.
                 T.barrier_arrive(bar_dhtmp_ready)
                 for i_s in T.serial(num_iters):
                     cur_idx = chunk_start_idx + num_iters - i_s - 1
@@ -406,6 +427,11 @@ def tilelang_fused_chunk_gdr_bwd(
 
                     # 01, 02, 03
                     T.barrier_wait(bar_01, (i_s + 0) % 2)
+                    if i_s > 0:
+                        T.barrier_wait(bar_k_left_ready, (i_s - 1) % 2)
+                        T.copy(dh_fragment_1, tmp_shared_4_1)
+                        T.fence_proxy_async()
+                        T.barrier_arrive(bar_dh_right_ready)
                     g_last_local_3[0] = g_exp_shared[block_S - 1]
                     # dS0 = g_last * dSt; scale each naturally indexed half fragment.
                     if state_v_first:
@@ -552,22 +578,7 @@ def tilelang_fused_chunk_gdr_bwd(
 
                     # 15
                     T.barrier_wait(bar_15, (i_s + 0) % 2)
-                    # Write dS0 to HBM slot i_s % 2; K-07 reads the opposite slot, avoiding a race.
-                    if state_v_first:
-                        for j_v, j_k in T.Parallel(DV, DK // 2):
-                            dh_tmp[bb, bh, i_s % 2, j_v, j_k] = T.Cast(qkva_dtype, dh_fragment_0[j_v, j_k])
-                            dh_tmp[bb, bh, i_s % 2, j_v, DK // 2 + j_k] = T.Cast(qkva_dtype, dh_fragment_1[j_v, j_k])
-                    else:
-                        for j_k, j_v in T.Parallel(DK // 2, DV):
-                            dh_tmp[bb, bh, i_s % 2, j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_0[j_k, j_v])
-                            dh_tmp[bb, bh, i_s % 2, DK // 2 + j_k, j_v] = T.Cast(qkva_dtype, dh_fragment_1[j_k, j_v])
-                    # Prefetch the left half from the slot written this iteration.
-                    if state_v_first:
-                        T.copy(dh_fragment_0, tmp_shared_4_1)
-                    else:
-                        T.copy(dh_fragment_0, tmp_shared_4_1)
-                    # Publish slot i_s % 2, interleaved with K-01 reads from slot (i_s + 1) % 2.
-                    T.evaluate(T.call_extern("handle", "__threadfence_block"))
+                    T.copy(dh_fragment_0, tmp_shared_4_1)
                     T.fence_proxy_async()
                     T.barrier_arrive(bar_dhtmp_ready)
 
@@ -602,10 +613,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # The initial dSt is already available as the fp32 dht
                     # input (or is identically zero).  Materialize it in
                     # shared memory directly for the first reverse chunk
-                    # instead of round-tripping through dh_tmp.  The latter
-                    # is an HBM producer/consumer hand-off within one CTA and
-                    # was observed to return stale allocator data on SM120
-                    # when many short varlen CTAs run concurrently.
+                    # instead of an unnecessary global-memory round trip.
                     if i_s == 0:
                         if state_v_first:
                             for j_v, j_k in T.Parallel(DV, DK // 2):
@@ -621,6 +629,7 @@ def tilelang_fused_chunk_gdr_bwd(
                                 )
                         T.fence_proxy_async()
                     # dV' = K @ dSt, reducing over the resident left half.
+                    T.copy(tmp_shared_4_1, dh_left_fragment)
                     if state_v_first:
                         T.gemm(
                             k_shared[:, :DK//2],
@@ -629,6 +638,8 @@ def tilelang_fused_chunk_gdr_bwd(
                             transpose_B=True,
                             clear_accum=True,
                         )
+                        if i_s > 0:
+                            T.barrier_arrive(bar_k_left_ready)
                         if i_s == 0:
                             for j_v, j_k in T.Parallel(DV, DK // 2):
                                 tmp_shared_4_1[j_v, j_k] = (
@@ -636,7 +647,7 @@ def tilelang_fused_chunk_gdr_bwd(
                                     if use_dht else 0
                                 )
                         else:
-                            T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, 0:DV, DK//2:DK], tmp_shared_4_1)
+                            T.barrier_wait(bar_dh_right_ready, (i_s - 1) % 2)
                         T.fence_proxy_async()
                         T.gemm(
                             k_shared[:, DK//2:],
@@ -652,6 +663,8 @@ def tilelang_fused_chunk_gdr_bwd(
                             dv_fragment,
                             clear_accum=True,
                         )
+                        if i_s > 0:
+                            T.barrier_arrive(bar_k_left_ready)
                         if i_s == 0:
                             for j_k, j_v in T.Parallel(DK // 2, DV):
                                 tmp_shared_4_1[j_k, j_v] = (
@@ -659,7 +672,7 @@ def tilelang_fused_chunk_gdr_bwd(
                                     if use_dht else 0
                                 )
                         else:
-                            T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, DK//2:DK, 0:DV], tmp_shared_4_1)
+                            T.barrier_wait(bar_dh_right_ready, (i_s - 1) % 2)
                         T.fence_proxy_async()
                         T.gemm(
                             k_shared[:, DK//2:],
@@ -748,29 +761,10 @@ def tilelang_fused_chunk_gdr_bwd(
                             transpose_B=True,
                             clear_accum=True,
                         )
-                    # K loads the previous dS0's left half from slot (i_s + 1) % 2;
-                    # S writes slot i_s % 2 this iteration, so the double buffer avoids a race.
-                    if state_v_first:
-                        if i_s == 0:
-                            for j_v, j_k in T.Parallel(DV, DK // 2):
-                                tmp_shared_4_1[j_v, j_k] = (
-                                    T.Cast(qkva_dtype, dht[bb, bh, j_v, j_k])
-                                    if use_dht else 0
-                                )
-                        else:
-                            T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, 0:DV, 0:DK//2], tmp_shared_4_1)
-                    else:
-                        if i_s == 0:
-                            for j_k, j_v in T.Parallel(DK // 2, DV):
-                                tmp_shared_4_1[j_k, j_v] = (
-                                    T.Cast(qkva_dtype, dht[bb, bh, j_k, j_v])
-                                    if use_dht else 0
-                                )
-                        else:
-                            T.copy(dh_tmp[bb, bh, (i_s + 1) % 2, 0:DK//2, 0:DV], tmp_shared_4_1)
+                    # Restore the left half retained before tmp_shared_4_1 was
+                    # overwritten by the right half for the dV' calculation.
+                    T.copy(dh_left_fragment, tmp_shared_4_1)
                     T.fence_proxy_async()
-                    T.barrier_arrive(bar_k_left_ready)
-                    T.barrier_wait(bar_k_left_ready, (i_s + 0) % 2)
                     # dK = dV' @ dSt^T, reducing over the left half loaded by K.
                     if state_v_first:
                         T.gemm(
@@ -1269,18 +1263,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     if num_iters > 0:
                         T.barrier_arrive(bar_00)
 
-                elif tx < 384 + 64:  # TODO: set padding to 0
-                    if bb == batch_size - 1:
-                        for j_s, j_v in T.Parallel(block_S, DV):
-                            if seq_end_idx + j_s < num_tokens:
-                                dv[batch_idx, seq_end_idx + j_s, bh, j_v] = 0
-                        for j_s, j_k in T.Parallel(block_S, DK):
-                            if seq_end_idx + j_s < num_tokens:
-                                dq[batch_idx, seq_end_idx + j_s, bh, j_k] = 0
-                        for j_s, j_k in T.Parallel(block_S, DK):
-                            if seq_end_idx + j_s < num_tokens:
-                                dk[batch_idx, seq_end_idx + j_s, bh, j_k] = 0
-
+                elif tx < 384 + 64:
                     for i_s in T.serial(num_iters):
                         left = seq_start_idx + (num_iters - i_s - 1) * block_S
                         right = left + block_S
@@ -1387,24 +1370,6 @@ def tilelang_fused_chunk_gdr_bwd(
                         T.barrier_arrive(bar_02)
 
                 else:
-                    if bb == batch_size - 1:
-                        for j_s, j_v in T.Parallel(block_S, DV):
-                            if seq_end_idx + j_s < num_tokens:
-                                dv[batch_idx, seq_end_idx + j_s, bh, j_v] = 0
-                        for j_s, j_k in T.Parallel(block_S, DK):
-                            if seq_end_idx + j_s < num_tokens:
-                                dq[batch_idx, seq_end_idx + j_s, bh, j_k] = 0
-                        for j_s, j_k in T.Parallel(block_S, DK):
-                            if seq_end_idx + j_s < num_tokens:
-                                dk[batch_idx, seq_end_idx + j_s, bh, j_k] = 0
-                        # dG is post-processed into a fresh buffer by
-                        # chunk_local_cumsum, which repeats this one-tile fill.
-                        # dB is returned directly and must be initialized here.
-                        for j_s in T.Parallel(block_S):
-                            if seq_end_idx + j_s < num_tokens:
-                                dg[batch_idx, seq_end_idx + j_s, bh] = 0
-                                db[batch_idx, seq_end_idx + j_s, bh] = 0
-
                     for i_s in T.serial(num_iters):
                         left = seq_start_idx + (num_iters - i_s - 1) * block_S
 
@@ -1479,25 +1444,12 @@ def fused_gdr_bwd(
             dtype=torch.float32,
             device=k.device,
         )
-    # In packed-varlen mode the backing token buffer may extend arbitrarily
-    # far beyond cu_seqlens[-1].  The kernel must zero one trailing tile for
-    # TMA consumers, while initializing here also gives callers deterministic
-    # (and NaN-free) values in the rest of the otherwise undefined padding.
-    output_factory = torch.zeros_like if is_varlen else torch.empty_like
-    dq = output_factory(v)
-    dk = output_factory(v)
-    dv = output_factory(v)
-    dg = output_factory(g)
-    db = output_factory(b)
+    dq = torch.empty_like(v)
+    dk = torch.empty_like(v)
+    dv = torch.empty_like(v)
+    dg = torch.empty_like(g)
+    db = torch.empty_like(b)
     dh0 = torch.empty_like(dht)
-    # HBM staging for dS0, written every iteration and reloaded half at a time.
-    dh_tmp = torch.empty(
-        (real_batch_size, H, 2, V, K)
-        if state_v_first
-        else (real_batch_size, H, 2, K, V),
-        dtype=k.dtype,
-        device=k.device,
-    )
 
     tilelang_fused_chunk_gdr_bwd_kernel = tilelang_fused_chunk_gdr_bwd(
         H,
@@ -1527,7 +1479,6 @@ def fused_gdr_bwd(
         g,
         b,
         h,
-        dh_tmp,
         cu_seqlens,
         chunk_offsets,
         dq,
@@ -1537,5 +1488,20 @@ def fused_gdr_bwd(
         db,
         dh0,
     )
+
+    if is_varlen:
+        # The persistent kernel covers all real tokens and one trailing tile.
+        # Clear the complete padding domain separately without first writing
+        # zeros over the much larger valid output domain.
+        tilelang_zero_bwd_padding_kernel = tilelang_zero_bwd_padding(
+            H,
+            K,
+            V,
+            qkva_dtype=q.dtype,
+            g_dtype=g.dtype,
+            b_dtype=b.dtype,
+            seqlen_dtype=cu_seqlens.dtype,
+        )
+        tilelang_zero_bwd_padding_kernel(cu_seqlens, dq, dk, dv, dg, db)
 
     return dq, dk, dv, dg, db, dh0
